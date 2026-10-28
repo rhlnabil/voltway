@@ -13,6 +13,11 @@ public class CreateVehicleRequest {
     @NotBlank(message = "modelName is required")
     private String modelName;
 
+    private String brand;
+    private String model;
+    private Integer year;
+    private String imageUrl;
+
     @NotNull @Min(1)
     private Integer autonomyKm;
 

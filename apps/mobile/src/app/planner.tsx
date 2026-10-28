@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useRef, useState } from 'react';
 import {
   View,
   Text,
@@ -28,6 +28,8 @@ export default function PlannerScreen() {
   const [endQuery, setEndQuery] = useState('');
   const [startSugg, setStartSugg] = useState<GeocodingResult[]>([]);
   const [endSugg, setEndSugg] = useState<GeocodingResult[]>([]);
+  const [startSearching, setStartSearching] = useState(false);
+  const [endSearching, setEndSearching] = useState(false);
   const [start, setStart] = useState<Point | null>(null);
   const [end, setEnd] = useState<Point | null>(null);
   const [route, setRoute] = useState<RouteResult | null>(null);
@@ -37,14 +39,40 @@ export default function PlannerScreen() {
   const [error, setError] = useState<string | null>(null);
   const [savedTripId, setSavedTripId] = useState<number | null>(null);
 
+  const searchTimerStart = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const searchTimerEnd = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // 🔍 Recherche avec debounce 400ms + biais géographique
   async function search(query: string, which: 'start' | 'end') {
-    try {
-      const r = await geocodeAddress(query);
-      if (which === 'start') setStartSugg(r);
-      else setEndSugg(r);
-    } catch (e) {
-      console.warn('[VoltWay] geocode', e);
+    const timerRef = which === 'start' ? searchTimerStart : searchTimerEnd;
+    if (timerRef.current) clearTimeout(timerRef.current);
+
+    if (query.trim().length < 3) {
+      if (which === 'start') setStartSugg([]);
+      else setEndSugg([]);
+      return;
     }
+
+    timerRef.current = setTimeout(async () => {
+      if (which === 'start') setStartSearching(true);
+      else setEndSearching(true);
+
+      try {
+        // Biais vers la position de départ si connue
+        const results = await geocodeAddress(
+          query,
+          start?.latitude,
+          start?.longitude
+        );
+        if (which === 'start') setStartSugg(results);
+        else setEndSugg(results);
+      } catch (e) {
+        console.warn('[VoltWay] geocode', e);
+      } finally {
+        if (which === 'start') setStartSearching(false);
+        else setEndSearching(false);
+      }
+    }, 400);
   }
 
   async function useMyLocation() {
@@ -107,7 +135,7 @@ export default function PlannerScreen() {
       const stations = await fetchStationsAlongRoute(result.coordinates, 15, 40);
       setRouteStations(stations);
 
-      // 3. Persiste le trajet en BDD (backend Spring Boot)
+      // 3. Persiste le trajet en BDD
       setLoadingMsg('Sauvegarde du trajet…');
       const stopsCalc = computeChargingStops(
         result.distanceMeters / 1000,
@@ -153,6 +181,8 @@ export default function PlannerScreen() {
     setEnd(null);
     setStartQuery('');
     setEndQuery('');
+    setStartSugg([]);
+    setEndSugg([]);
     setRoute(null);
     setRouteStations([]);
     setError(null);
@@ -162,6 +192,30 @@ export default function PlannerScreen() {
   const stops = route
     ? computeChargingStops(route.distanceMeters / 1000, vehicle)
     : null;
+
+  // 🎨 Rendu d'une suggestion (titre + sous-titre)
+  function renderSuggestion(s: GeocodingResult, idx: number, which: 'start' | 'end') {
+    const parts = s.displayName.split(', ');
+    const title = parts.slice(0, 2).join(', ');
+    const subtitle = parts.slice(2).join(', ');
+
+    return (
+      <Pressable
+        key={`${which}-${idx}`}
+        style={styles.sugg}
+        onPress={() => pick(s, which)}
+      >
+        <Text style={styles.suggTitle} numberOfLines={1}>
+          📍 {title}
+        </Text>
+        {subtitle ? (
+          <Text style={styles.suggSub} numberOfLines={1}>
+            {subtitle}
+          </Text>
+        ) : null}
+      </Pressable>
+    );
+  }
 
   return (
     <SafeAreaView style={styles.container} edges={['top']}>
@@ -178,6 +232,7 @@ export default function PlannerScreen() {
             {vehicle.modelName} · {vehicle.autonomyKm} km
           </Text>
 
+          {/* Départ */}
           <Text style={styles.label}>Départ</Text>
           <View style={styles.row}>
             <TextInput
@@ -187,25 +242,26 @@ export default function PlannerScreen() {
               onChangeText={(t) => {
                 setStartQuery(t);
                 setStart(null);
-                if (t.length > 3) search(t, 'start');
+                search(t, 'start');
               }}
             />
             <Pressable style={styles.locBtn} onPress={useMyLocation}>
               <Text style={{ fontSize: 20 }}>📍</Text>
             </Pressable>
           </View>
-          {startSugg.map((s, i) => (
-            <Pressable
-              key={`ss-${i}`}
-              style={styles.sugg}
-              onPress={() => pick(s, 'start')}
-            >
-              <Text numberOfLines={2} style={styles.suggTxt}>
-                {s.displayName}
-              </Text>
-            </Pressable>
-          ))}
+          {startSearching && (
+            <View style={styles.searchingRow}>
+              <ActivityIndicator color="#22c55e" size="small" />
+              <Text style={styles.searchingText}>Recherche…</Text>
+            </View>
+          )}
+          {startSugg.length > 0 && (
+            <View style={styles.suggestionsBox}>
+              {startSugg.map((s, i) => renderSuggestion(s, i, 'start'))}
+            </View>
+          )}
 
+          {/* Arrivée */}
           <Text style={styles.label}>Arrivée</Text>
           <TextInput
             style={styles.input}
@@ -214,20 +270,20 @@ export default function PlannerScreen() {
             onChangeText={(t) => {
               setEndQuery(t);
               setEnd(null);
-              if (t.length > 3) search(t, 'end');
+              search(t, 'end');
             }}
           />
-          {endSugg.map((s, i) => (
-            <Pressable
-              key={`es-${i}`}
-              style={styles.sugg}
-              onPress={() => pick(s, 'end')}
-            >
-              <Text numberOfLines={2} style={styles.suggTxt}>
-                {s.displayName}
-              </Text>
-            </Pressable>
-          ))}
+          {endSearching && (
+            <View style={styles.searchingRow}>
+              <ActivityIndicator color="#22c55e" size="small" />
+              <Text style={styles.searchingText}>Recherche…</Text>
+            </View>
+          )}
+          {endSugg.length > 0 && (
+            <View style={styles.suggestionsBox}>
+              {endSugg.map((s, i) => renderSuggestion(s, i, 'end'))}
+            </View>
+          )}
 
           <View style={styles.actions}>
             <Pressable style={styles.resetBtn} onPress={reset}>
@@ -313,7 +369,6 @@ export default function PlannerScreen() {
               />
               <Row label="Arrêts recommandés" value={`${stops.stopsNeeded}`} />
               <Row label="Temps recharge" value={`${stops.chargeTimeMin} min`} />
-              
               {savedTripId !== null && (
                 <Text style={styles.savedBadge}>
                   💾 Trajet sauvegardé en BDD (id #{savedTripId})
@@ -396,14 +451,29 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: '#cbd5e1',
   },
-  sugg: {
+  searchingRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginTop: 6,
+    paddingLeft: 4,
+  },
+  searchingText: { marginLeft: 8, fontSize: 12, color: '#2563eb' },
+  suggestionsBox: {
     backgroundColor: '#fff',
-    padding: 12,
+    borderRadius: 10,
+    marginTop: 6,
     borderWidth: 1,
     borderColor: '#e2e8f0',
-    borderTopWidth: 0,
+    overflow: 'hidden',
   },
-  suggTxt: { fontSize: 13, color: '#0f172a' },
+  sugg: {
+    paddingHorizontal: 14,
+    paddingVertical: 10,
+    borderBottomWidth: 1,
+    borderBottomColor: '#f1f5f9',
+  },
+  suggTitle: { fontSize: 14, fontWeight: '700', color: '#0f172a' },
+  suggSub: { fontSize: 11, color: '#64748b', marginTop: 2 },
   actions: { flexDirection: 'row', gap: 10, marginTop: 20 },
   resetBtn: {
     flex: 1,

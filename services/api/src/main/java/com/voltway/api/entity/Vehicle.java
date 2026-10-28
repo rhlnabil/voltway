@@ -21,6 +21,18 @@ public class Vehicle {
     @Column(name = "model_name", nullable = false)
     private String modelName;
 
+    @Column(name = "brand")
+    private String brand;
+
+    @Column(name = "model")
+    private String model;
+
+    @Column(name = "year")
+    private Integer year;
+
+    @Column(name = "image_url", columnDefinition = "TEXT")
+    private String imageUrl;
+
     @Column(name = "autonomy_km", nullable = false)
     private Integer autonomyKm;
 

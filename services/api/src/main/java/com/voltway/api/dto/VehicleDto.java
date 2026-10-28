@@ -8,6 +8,10 @@ public class VehicleDto {
     private Long id;
     private Long userId;
     private String modelName;
+    private String brand;
+    private String model;
+    private Integer year;
+    private String imageUrl;
     private Integer autonomyKm;
     private BigDecimal batteryKwh;
     private BigDecimal consumptionKwh100;
