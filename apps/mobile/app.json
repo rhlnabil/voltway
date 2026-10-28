@@ -3,6 +3,7 @@
     "name": "VoltWay",
     "slug": "voltway",
     "version": "1.0.0",
+    "scheme": "voltway",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
     "userInterfaceStyle": "light",
@@ -23,14 +24,15 @@
     "ios": {
       "bundleIdentifier": "com.voltway.app"
     },
-    "web": {
-      "favicon": "./assets/favicon.png"
-    },
+    "platforms": ["android", "ios"],
     "extra": {
       "eas": {
         "projectId": "ca468238-32c0-4560-8b57-458d3f80839c"
       }
     },
-    "owner": "rhlnabil02"
+    "owner": "rhlnabil02",
+    "plugins": [
+      "expo-location"
+    ]
   }
 }
