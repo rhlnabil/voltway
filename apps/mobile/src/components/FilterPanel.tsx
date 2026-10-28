@@ -10,14 +10,6 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { useFiltersStore } from '../stores/filtersStore';
 
 const POWER_OPTIONS = [0, 22, 50, 100, 150, 250];
-const CONNECTOR_OPTIONS = [
-  'Type 2',
-  'CCS',
-  'CHAdeMO',
-  'Type 1',
-  'Tesla',
-  'Schuko',
-];
 
 type Props = {
   visible: boolean;
@@ -26,7 +18,7 @@ type Props = {
 };
 
 export default function FilterPanel({ visible, onClose, resultCount }: Props) {
-  const { filters, setMinPower, toggleConnector, reset } = useFiltersStore();
+  const { filters, setMinPower, reset } = useFiltersStore();
 
   return (
     <Modal
@@ -46,7 +38,6 @@ export default function FilterPanel({ visible, onClose, resultCount }: Props) {
             </View>
 
             <ScrollView contentContainerStyle={styles.scroll}>
-              {/* Puissance */}
               <Text style={styles.section}>⚡ Puissance minimale</Text>
               <View style={styles.row}>
                 {POWER_OPTIONS.map((kw) => {
@@ -57,7 +48,12 @@ export default function FilterPanel({ visible, onClose, resultCount }: Props) {
                       onPress={() => setMinPower(kw)}
                       style={[styles.chip, active && styles.chipActive]}
                     >
-                      <Text style={[styles.chipText, active && styles.chipTextActive]}>
+                      <Text
+                        style={[
+                          styles.chipText,
+                          active && styles.chipTextActive,
+                        ]}
+                      >
                         {kw === 0 ? 'Toutes' : `≥ ${kw} kW`}
                       </Text>
                     </Pressable>
@@ -65,35 +61,14 @@ export default function FilterPanel({ visible, onClose, resultCount }: Props) {
                 })}
               </View>
 
-              {/* Connecteurs */}
-              <Text style={styles.section}>🔌 Type de connecteur</Text>
-              <View style={styles.row}>
-                {CONNECTOR_OPTIONS.map((c) => {
-                  const active = filters.connectorTypes.includes(c);
-                  return (
-                    <Pressable
-                      key={c}
-                      onPress={() => toggleConnector(c)}
-                      style={[styles.chip, active && styles.chipActive]}
-                    >
-                      <Text style={[styles.chipText, active && styles.chipTextActive]}>
-                        {c}
-                      </Text>
-                    </Pressable>
-                  );
-                })}
-              </View>
-
-              {/* Résultats */}
               <View style={styles.resultBox}>
                 <Text style={styles.resultText}>
-                  ⚡ {resultCount} borne{resultCount > 1 ? 's' : ''} correspondante
-                  {resultCount > 1 ? 's' : ''}
+                  ⚡ {resultCount} borne{resultCount > 1 ? 's' : ''}{' '}
+                  correspondante{resultCount > 1 ? 's' : ''}
                 </Text>
               </View>
             </ScrollView>
 
-            {/* Actions */}
             <View style={styles.actions}>
               <Pressable style={styles.resetBtn} onPress={reset}>
                 <Text style={styles.resetText}>Réinitialiser</Text>

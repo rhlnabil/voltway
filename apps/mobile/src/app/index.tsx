@@ -36,8 +36,7 @@ export default function MapScreen() {
     () => applyFilters(stations, filters),
     [stations, filters]
   );
-  const activeFilterCount =
-    (filters.minPowerKW > 0 ? 1 : 0) + filters.connectorTypes.length;
+ const activeFilterCount = filters.minPowerKW > 0 ? 1 : 0;
 
   /**
    * Charge les bornes autour d'une région visible.
