@@ -1,0 +1,30 @@
+@"
+# Node / React Native
+node_modules/
+.expo/
+dist/
+*.log
+
+# EAS / builds
+*.apk
+*.aab
+android/
+ios/
+
+# Java / Maven
+target/
+*.class
+
+# IDE
+.vscode/
+.idea/
+*.iml
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Env
+.env
+.env.local
+"@ | Out-File -Encoding utf8 .gitignore
