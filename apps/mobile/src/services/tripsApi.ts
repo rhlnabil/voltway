@@ -1,5 +1,4 @@
 import { apiFetch } from './apiClient';
-import { TEMP_USER_ID } from '../config';
 
 export type TripStationDto = {
   ocmStationId: number;
@@ -23,7 +22,7 @@ export type TripDto = {
 };
 
 export const tripsApi = {
-  list: () => apiFetch<TripDto[]>(`/api/trips?userId=${TEMP_USER_ID}`),
+  list: () => apiFetch<TripDto[]>('/api/trips'),
 
   get: (id: number) => apiFetch<TripDto>(`/api/trips/${id}`),
 
@@ -42,7 +41,7 @@ export const tripsApi = {
   }) =>
     apiFetch<TripDto>('/api/trips', {
       method: 'POST',
-      body: JSON.stringify({ userId: TEMP_USER_ID, ...payload }),
+      body: JSON.stringify(payload),
     }),
 
   delete: (id: number) =>

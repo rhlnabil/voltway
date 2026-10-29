@@ -26,16 +26,20 @@ public class TripService {
                 .toList();
     }
 
-    public TripDto findById(Long id) {
-        Trip t = tripRepository.findById(id)
-                .orElseThrow(() -> new RuntimeException("Trip not found: " + id));
+    public TripDto findById(Long userId, Long tripId) {
+        Trip t = tripRepository.findById(tripId)
+                .orElseThrow(() -> new RuntimeException("Trip not found: " + tripId));
+
+        if (!t.getUser().getId().equals(userId)) {
+            throw new RuntimeException("Access denied: this trip does not belong to you");
+        }
         return toDto(t, true);
     }
 
     @Transactional
-    public TripDto create(CreateTripRequest req) {
-        User user = userRepository.findById(req.getUserId())
-                .orElseThrow(() -> new RuntimeException("User not found"));
+    public TripDto create(Long userId, CreateTripRequest req) {
+        User user = userRepository.findById(userId)
+                .orElseThrow(() -> new RuntimeException("User not found: " + userId));
 
         Vehicle vehicle = null;
         if (req.getVehicleId() != null) {
@@ -79,11 +83,14 @@ public class TripService {
     }
 
     @Transactional
-    public void delete(Long id) {
-        if (!tripRepository.existsById(id)) {
-            throw new RuntimeException("Trip not found: " + id);
+    public void delete(Long userId, Long tripId) {
+        Trip t = tripRepository.findById(tripId)
+                .orElseThrow(() -> new RuntimeException("Trip not found: " + tripId));
+
+        if (!t.getUser().getId().equals(userId)) {
+            throw new RuntimeException("Access denied: this trip does not belong to you");
         }
-        tripRepository.deleteById(id);
+        tripRepository.delete(t);
     }
 
     private TripDto toDto(Trip t, boolean includeStations) {

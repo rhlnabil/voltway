@@ -1,10 +1,13 @@
 import { API_BASE_URL } from '../config';
+import { tokenService } from './tokenService';
 
 export async function apiFetch<T>(
   path: string,
   options: RequestInit = {}
 ): Promise<T> {
+  const token = await tokenService.getToken();
   const url = `${API_BASE_URL}${path}`;
+
   console.log(`[API] ${options.method ?? 'GET'} ${url}`);
 
   try {
@@ -12,9 +15,15 @@ export async function apiFetch<T>(
       ...options,
       headers: {
         'Content-Type': 'application/json',
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
         ...(options.headers ?? {}),
       },
     });
+
+    if (res.status === 401) {
+      await tokenService.clear();
+      throw new Error('Session expirée — reconnecte-toi');
+    }
 
     if (!res.ok) {
       const text = await res.text();
@@ -32,13 +41,11 @@ export async function apiFetch<T>(
   }
 }
 
-/**
- * Vérifie que le backend est joignable.
- */
 export async function pingBackend(): Promise<boolean> {
   try {
-    const res = await fetch(`${API_BASE_URL}/api/vehicles?userId=1`, {
-      method: 'GET',
+    const token = await tokenService.getToken();
+    const res = await fetch(`${API_BASE_URL}/api/vehicles`, {
+      headers: token ? { Authorization: `Bearer ${token}` } : {},
     });
     return res.status < 500;
   } catch {

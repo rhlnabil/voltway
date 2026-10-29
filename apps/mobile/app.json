@@ -7,34 +7,38 @@
     "orientation": "portrait",
     "icon": "./assets/icon.png",
     "userInterfaceStyle": "light",
-    "splash": {
-      "image": "./assets/splash-icon.png",
-      "resizeMode": "contain",
-      "backgroundColor": "#ffffff"
-    },
     "android": {
       "package": "com.voltway.app",
       "adaptiveIcon": {
         "foregroundImage": "./assets/android-icon-foreground.png",
         "backgroundImage": "./assets/android-icon-background.png",
         "monochromeImage": "./assets/android-icon-monochrome.png",
-        "backgroundColor": "#ffffff"
+        "backgroundColor": "#16a34a"
       }
     },
     "ios": {
       "bundleIdentifier": "com.voltway.app"
     },
-    "platforms": ["android", "ios"],
+    "plugins": [
+      "expo-location",
+      "expo-image-picker",
+      "expo-secure-store",
+      "expo-font",
+      [
+        "expo-splash-screen",
+        {
+          "image": "./assets/logo.png",
+          "imageWidth": 220,
+          "resizeMode": "contain",
+          "backgroundColor": "#000000"
+        }
+      ]
+    ],
     "extra": {
       "eas": {
         "projectId": "ca468238-32c0-4560-8b57-458d3f80839c"
       }
     },
-    "owner": "rhlnabil02",
-    "plugins": [
-      "expo-location",  
-      "expo-image-picker"
-
-    ]
+    "owner": "rhlnabil02"
   }
 }

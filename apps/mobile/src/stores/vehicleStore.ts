@@ -1,4 +1,5 @@
 import { create } from 'zustand';
+import { vehiclesApi } from '../services/vehiclesApi';
 
 export type Vehicle = {
   modelName: string;
@@ -9,7 +10,10 @@ export type Vehicle = {
 
 type VehicleStore = {
   vehicle: Vehicle;
+  loading: boolean;
+  loaded: boolean;
   setVehicle: (v: Partial<Vehicle>) => void;
+  loadFromBackend: () => Promise<void>;
 };
 
 const DEFAULT_VEHICLE: Vehicle = {
@@ -19,15 +23,41 @@ const DEFAULT_VEHICLE: Vehicle = {
   consumptionKWh100: 17,
 };
 
-export const useVehicleStore = create<VehicleStore>((set) => ({
+export const useVehicleStore = create<VehicleStore>((set, get) => ({
   vehicle: DEFAULT_VEHICLE,
+  loading: false,
+  loaded: false,
+
   setVehicle: (v) => set((s) => ({ vehicle: { ...s.vehicle, ...v } })),
+
+  loadFromBackend: async () => {
+    if (get().loading) return;
+    set({ loading: true });
+    try {
+      const list = await vehiclesApi.list();
+      if (list.length > 0) {
+        const v = list[0];
+        console.log('[vehicleStore] Véhicule chargé depuis BDD:', v.brand, v.model);
+        set({
+          vehicle: {
+            modelName: v.modelName || 'Ma voiture',
+            autonomyKm: v.autonomyKm || 350,
+            batteryKWh: v.batteryKwh || 60,
+            consumptionKWh100: 17,
+          },
+          loaded: true,
+        });
+      } else {
+        console.log('[vehicleStore] Aucun véhicule en BDD, on garde le défaut');
+      }
+    } catch (e) {
+      console.warn('[vehicleStore] loadFromBackend error:', e);
+    } finally {
+      set({ loading: false });
+    }
+  },
 }));
 
-/**
- * Calcule les arrêts de recharge recommandés pour un trajet.
- * (Sans estimation de coût)
- */
 export function computeChargingStops(
   distanceKm: number,
   vehicle: Vehicle
@@ -40,7 +70,6 @@ export function computeChargingStops(
   const stopsNeeded =
     distanceKm <= usableKm ? 0 : Math.ceil(distanceKm / usableKm) - 1;
 
-  // 20% → 80% = 60% batterie, à 100 kW moyen
   const energyPerStopKWh = vehicle.batteryKWh * 0.6;
   const chargeTimePerStopMin = (energyPerStopKWh / 100) * 60;
 

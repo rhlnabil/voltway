@@ -1,12 +1,14 @@
 {
   "cli": {
-    "version": ">= 5.9.0",
-      "requireCommit": true
+    "version": ">= 5.9.0"
   },
   "build": {
     "development": {
       "developmentClient": true,
-      "distribution": "internal"
+      "distribution": "internal",
+      "android": {
+        "buildType": "apk"
+      }
     },
     "preview": {
       "distribution": "internal",
@@ -14,11 +16,7 @@
         "buildType": "apk"
       }
     },
-    "production": {
-      "android": {
-        "buildType": "app-bundle"
-      }
-    }
+    "production": {}
   },
   "submit": {
     "production": {}

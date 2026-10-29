@@ -27,9 +27,9 @@ public class VehicleService {
     }
 
     @Transactional
-    public VehicleDto create(CreateVehicleRequest req) {
-        User user = userRepository.findById(req.getUserId())
-                .orElseThrow(() -> new RuntimeException("User not found: " + req.getUserId()));
+    public VehicleDto create(Long userId, CreateVehicleRequest req) {
+        User user = userRepository.findById(userId)
+                .orElseThrow(() -> new RuntimeException("User not found: " + userId));
 
         Vehicle v = Vehicle.builder()
                 .user(user)
@@ -37,7 +37,7 @@ public class VehicleService {
                 .brand(req.getBrand())
                 .model(req.getModel())
                 .year(req.getYear())
-                .imageUrl(req.getImageUrl())                          // ✅ imageUrl au lieu de imageBase64
+                .imageUrl(req.getImageUrl())
                 .autonomyKm(req.getAutonomyKm())
                 .batteryKwh(req.getBatteryKwh())
                 .consumptionKwh100(req.getConsumptionKwh100() != null
@@ -51,11 +51,14 @@ public class VehicleService {
     }
 
     @Transactional
-    public void delete(Long id) {
-        if (!vehicleRepository.existsById(id)) {
-            throw new RuntimeException("Vehicle not found: " + id);
+    public void delete(Long userId, Long vehicleId) {
+        Vehicle v = vehicleRepository.findById(vehicleId)
+                .orElseThrow(() -> new RuntimeException("Vehicle not found: " + vehicleId));
+
+        if (!v.getUser().getId().equals(userId)) {
+            throw new RuntimeException("Access denied: this vehicle does not belong to you");
         }
-        vehicleRepository.deleteById(id);
+        vehicleRepository.delete(v);
     }
 
     private VehicleDto toDto(Vehicle v) {
@@ -66,7 +69,7 @@ public class VehicleService {
                 .brand(v.getBrand())
                 .model(v.getModel())
                 .year(v.getYear())
-                .imageUrl(v.getImageUrl())                            // ✅ getImageUrl au lieu de getImageBase64
+                .imageUrl(v.getImageUrl())
                 .autonomyKm(v.getAutonomyKm())
                 .batteryKwh(v.getBatteryKwh())
                 .consumptionKwh100(v.getConsumptionKwh100())

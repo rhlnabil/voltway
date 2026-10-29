@@ -11,10 +11,10 @@ import {
 import { SafeAreaView } from 'react-native-safe-area-context';
 import MapView, { Marker, Region } from 'react-native-maps';
 import * as Location from 'expo-location';
-import { fetchNearbyStations, ChargeStation } from '../services/chargeStations';
-import { geocodeAddress, GeocodingResult } from '../services/geocoding';
-import { useFiltersStore, applyFilters } from '../stores/filtersStore';
-import FilterPanel from '../components/FilterPanel';
+import { fetchNearbyStations, ChargeStation } from '../../services/chargeStations';
+import { geocodeAddress, GeocodingResult } from '../../services/geocoding';
+import { useFiltersStore, applyFilters } from '../../stores/filtersStore';
+import FilterPanel from '../../components/FilterPanel';
 
 const FALLBACK = { latitude: 48.8566, longitude: 2.3522, label: 'Paris, France' };
 

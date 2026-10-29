@@ -12,9 +12,9 @@ import {
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import * as Location from 'expo-location';
-import { geocodeAddress, GeocodingResult } from '../services/geocoding';
-import { getRoute, RouteResult } from '../services/routing';
-import { useVehicleStore } from '../stores/vehicleStore';
+import { geocodeAddress, GeocodingResult } from '../../services/geocoding';
+import { getRoute, RouteResult } from '../../services/routing';
+import { useVehicleStore } from '../../stores/vehicleStore';
 
 type Point = { latitude: number; longitude: number; label: string };
 

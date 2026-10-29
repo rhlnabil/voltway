@@ -7,9 +7,6 @@ import java.math.BigDecimal;
 @Getter @Setter @NoArgsConstructor @AllArgsConstructor @Builder
 public class CreateVehicleRequest {
 
-    @NotNull(message = "userId is required")
-    private Long userId;
-
     @NotBlank(message = "modelName is required")
     private String modelName;
 

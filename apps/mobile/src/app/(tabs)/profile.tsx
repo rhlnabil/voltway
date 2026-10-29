@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useState } from 'react';
 import {
   View,
   Text,
@@ -11,10 +11,13 @@ import {
   Alert,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { vehiclesApi, Vehicle } from '../services/vehiclesApi';
-import { carImagesApi } from '../services/carImagesApi';
-import { pingBackend } from '../services/apiClient';
-import TripHistoryList from '../components/TripHistoryList';
+import { router } from 'expo-router';
+import { vehiclesApi, Vehicle } from '../../services/vehiclesApi';
+import { carImagesApi } from '../../services/carImagesApi';
+import { pingBackend } from '../../services/apiClient';
+import { authApi } from '../../services/authApi';
+import { tokenService } from '../../services/tokenService';
+import TripHistoryList from '../../components/TripHistoryList';
 
 export default function ProfileScreen() {
   const [vehicle, setVehicle] = useState<Vehicle | null>(null);
@@ -23,7 +26,7 @@ export default function ProfileScreen() {
   const [backendOk, setBackendOk] = useState(false);
   const [statusMsg, setStatusMsg] = useState('');
 
-  // 👤 Nom de personne (sera lié au compte JWT)
+  // 👤 Nom de personne (lié au compte JWT)
   const [personName, setPersonName] = useState('');
 
   const [brand, setBrand] = useState('');
@@ -34,14 +37,14 @@ export default function ProfileScreen() {
 
   const [imageUrl, setImageUrl] = useState<string | null>(null);
   const [imageLoading, setImageLoading] = useState(false);
+  const [searchTimer, setSearchTimer] = useState<ReturnType<typeof setTimeout> | null>(null);
 
-  // 🔍 Cache de la dernière combinaison recherchée
-  const lastSearchRef = useRef<string>('');
-  const skipInitialRef = useRef(true);
-
-  // Chargement initial du véhicule
   useEffect(() => {
     (async () => {
+      // Charge le nom de l'utilisateur depuis SecureStore
+      const stored = await tokenService.getUser();
+      if (stored) setPersonName(stored.name ?? '');
+
       const ok = await pingBackend();
       setBackendOk(ok);
       if (!ok) {
@@ -60,86 +63,41 @@ export default function ProfileScreen() {
           setAutonomyKm(String(v.autonomyKm));
           setBatteryKwh(String(v.batteryKwh));
           setImageUrl(v.imageUrl ?? null);
-
-          // 🔒 On mémorise la combinaison pour ne pas re-déclencher l'auto-search
-          lastSearchRef.current = `${(v.brand ?? '').trim()}|${(v.model ?? '').trim()}|${
-            v.year ?? ''
-          }`;
         }
       } catch (e) {
         console.warn(e);
       } finally {
         setLoading(false);
-        skipInitialRef.current = false;
       }
     })();
   }, []);
 
-  // 🔍 Auto-recherche de la photo (debounce 800 ms)
+  // 🔍 Auto-recherche d'image (debounce 800ms)
   useEffect(() => {
-    if (skipInitialRef.current) return;
-
-    const b = brand.trim();
-    const m = model.trim();
-    const y = year.trim();
-
-    // Il faut au minimum marque + modèle
-    if (!b || !m) return;
-
-    const key = `${b}|${m}|${y}`;
-    if (key === lastSearchRef.current) return;
+    if (!brand.trim() || !model.trim()) return;
+    if (searchTimer) clearTimeout(searchTimer);
 
     const timer = setTimeout(async () => {
-      lastSearchRef.current = key;
       setImageLoading(true);
-      setImageUrl(null);
       try {
-        const res = await carImagesApi.find(b, m, y ? Number(y) : undefined);
-        if (res.found && res.imageUrl) {
-          setImageUrl(res.imageUrl);
-        }
-      } catch (e) {
-        // silencieux — l'utilisateur peut cliquer sur 🔄
+        const res = await carImagesApi.find(
+          brand.trim(),
+          model.trim(),
+          year ? Number(year) : undefined
+        );
+        if (res.found && res.imageUrl) setImageUrl(res.imageUrl);
+        else setImageUrl(null);
+      } catch {
+        setImageUrl(null);
       } finally {
         setImageLoading(false);
       }
     }, 800);
 
+    setSearchTimer(timer);
     return () => clearTimeout(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [brand, model, year]);
-
-  // Recherche manuelle (bouton 🔄)
-  async function refreshImage() {
-    if (!brand.trim() || !model.trim()) {
-      Alert.alert(
-        'Marque et modèle requis',
-        'Renseigne au moins la marque et le modèle.'
-      );
-      return;
-    }
-    setImageLoading(true);
-    setStatusMsg('');
-    try {
-      const res = await carImagesApi.find(
-        brand.trim(),
-        model.trim(),
-        year ? Number(year) : undefined
-      );
-      if (res.found && res.imageUrl) {
-        setImageUrl(res.imageUrl);
-        setStatusMsg('✅ Photo mise à jour');
-        lastSearchRef.current = `${brand.trim()}|${model.trim()}|${year.trim()}`;
-      } else {
-        setImageUrl(null);
-        setStatusMsg('❌ Aucune photo trouvée — tu peux enregistrer sans photo.');
-      }
-    } catch (e: any) {
-      setImageUrl(null);
-      setStatusMsg(`❌ ${e.message}`);
-    } finally {
-      setImageLoading(false);
-    }
-  }
 
   async function save() {
     if (!backendOk) return;
@@ -169,11 +127,35 @@ export default function ProfileScreen() {
     }
   }
 
+  // 🚪 Déconnexion
+  function handleLogout() {
+    Alert.alert(
+      'Se déconnecter ?',
+      'Vous devrez vous reconnecter pour accéder à VoltWay.',
+      [
+        { text: 'Annuler', style: 'cancel' },
+        {
+          text: 'Déconnecter',
+          style: 'destructive',
+          onPress: async () => {
+            try {
+              await authApi.logout();
+              console.log('[Profile] ✓ Déconnecté');
+              router.replace('/auth/login');
+            } catch (e) {
+              console.warn('[Profile] logout error:', e);
+            }
+          },
+        },
+      ]
+    );
+  }
+
   if (loading) {
     return (
       <View style={styles.center}>
         <ActivityIndicator size="large" color="#d97706" />
-        <Text style={styles.loadingText}>Connexion au backend…</Text>
+        <Text style={styles.loadingText}>Chargement…</Text>
       </View>
     );
   }
@@ -181,21 +163,34 @@ export default function ProfileScreen() {
   return (
     <SafeAreaView style={styles.container} edges={['top']}>
       <ScrollView contentContainerStyle={styles.scroll}>
-        <Text style={styles.title}>👤 Mon profil</Text>
-        <Text style={styles.subtitle}>
-          {backendOk ? '🟢 Backend connecté' : '🔴 Backend injoignable'}
-        </Text>
+        <View style={styles.headerRow}>
+          <View style={{ flex: 1 }}>
+            <Text style={styles.title}>👤 Mon profil</Text>
+            <Text style={styles.subtitle}>
+              {backendOk ? '🟢 Backend connecté' : '🔴 Backend injoignable'}
+            </Text>
+          </View>
+          <Pressable
+            style={styles.logoutBtnTop}
+            onPress={handleLogout}
+            hitSlop={8}
+          >
+            <Text style={styles.logoutIcon}>🚪</Text>
+          </Pressable>
+        </View>
 
-        {/* 👤 Nom de personne (sera lié au compte JWT) */}
+        {/* 👤 Nom de personne */}
         <Text style={styles.label}>Nom de personne</Text>
         <TextInput
           style={styles.input}
           value={personName}
           onChangeText={setPersonName}
           placeholder="ex: Nabil"
+          editable={false}
         />
+        <Text style={styles.hint}>Modifiable après la prochaine version</Text>
 
-        {/* Photo auto */}
+        {/* 🚗 Véhicule */}
         <Text style={styles.sectionTitle}>🚗 Mon véhicule</Text>
 
         <View style={styles.imageWrap}>
@@ -244,18 +239,6 @@ export default function ProfileScreen() {
           placeholder="ex: 2023"
           keyboardType="numeric"
         />
-
-        <Pressable
-          style={[styles.imageBtn, imageLoading && styles.imageBtnDisabled]}
-          onPress={refreshImage}
-          disabled={imageLoading}
-        >
-          {imageLoading ? (
-            <ActivityIndicator color="#fff" />
-          ) : (
-            <Text style={styles.imageBtnText}>🔄 Rafraîchir la photo</Text>
-          )}
-        </Pressable>
 
         <Text style={styles.label}>Autonomie réelle (km)</Text>
         <TextInput
@@ -308,7 +291,13 @@ export default function ProfileScreen() {
           </View>
         )}
 
+        {/* 🧭 Historique trajets */}
         <TripHistoryList />
+
+        {/* 🚪 Bouton déconnexion (en bas) */}
+        <Pressable style={styles.logoutBtnBottom} onPress={handleLogout}>
+          <Text style={styles.logoutTextBottom}>🚪 Se déconnecter</Text>
+        </Pressable>
       </ScrollView>
     </SafeAreaView>
   );
@@ -324,13 +313,31 @@ const styles = StyleSheet.create({
   },
   loadingText: { marginTop: 12, color: '#92400e', fontWeight: '600' },
   scroll: { padding: 20, paddingBottom: 60 },
+
+  headerRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginBottom: 8,
+  },
   title: {
     fontSize: 28,
     fontWeight: 'bold',
     color: '#d97706',
     marginBottom: 4,
   },
-  subtitle: { fontSize: 14, color: '#92400e', marginBottom: 20 },
+  subtitle: { fontSize: 14, color: '#92400e' },
+  logoutBtnTop: {
+    width: 44,
+    height: 44,
+    borderRadius: 22,
+    backgroundColor: '#fff',
+    justifyContent: 'center',
+    alignItems: 'center',
+    borderWidth: 1,
+    borderColor: '#fca5a5',
+  },
+  logoutIcon: { fontSize: 20 },
+
   sectionTitle: {
     fontSize: 18,
     fontWeight: '700',
@@ -372,21 +379,19 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     alignItems: 'center',
   },
-  imageBtn: {
-    marginTop: 10,
-    backgroundColor: '#d97706',
-    paddingVertical: 12,
-    borderRadius: 10,
-    alignItems: 'center',
-  },
-  imageBtnDisabled: { backgroundColor: '#94a3b8' },
-  imageBtnText: { color: '#fff', fontWeight: '700', fontSize: 14 },
+
   label: {
     fontSize: 13,
     fontWeight: '700',
     color: '#334155',
     marginTop: 14,
     marginBottom: 6,
+  },
+  hint: {
+    fontSize: 11,
+    color: '#94a3b8',
+    fontStyle: 'italic',
+    marginTop: 4,
   },
   input: {
     backgroundColor: '#fff',
@@ -396,6 +401,7 @@ const styles = StyleSheet.create({
     fontSize: 14,
     borderWidth: 1,
     borderColor: '#cbd5e1',
+    color: '#0f172a',
   },
   saveBtn: {
     marginTop: 24,
@@ -422,4 +428,16 @@ const styles = StyleSheet.create({
     marginBottom: 8,
   },
   infoText: { fontSize: 13, color: '#475569', marginBottom: 4 },
+
+  logoutBtnBottom: {
+    marginTop: 30,
+    marginBottom: 20,
+    paddingVertical: 14,
+    borderRadius: 10,
+    backgroundColor: '#fee2e2',
+    alignItems: 'center',
+    borderWidth: 1,
+    borderColor: '#fca5a5',
+  },
+  logoutTextBottom: { color: '#dc2626', fontWeight: '700', fontSize: 14 },
 });

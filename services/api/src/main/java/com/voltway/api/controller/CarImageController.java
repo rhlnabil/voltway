@@ -23,15 +23,8 @@ public class CarImageController {
         String imageUrl = carImageService.findImageUrl(make, model, year);
 
         if (imageUrl == null) {
-            return ResponseEntity.ok(Map.of(
-                    "found", false,
-                    "imageUrl", ""
-            ));
+            return ResponseEntity.ok(Map.of("found", false, "imageUrl", ""));
         }
-
-        return ResponseEntity.ok(Map.of(
-                "found", true,
-                "imageUrl", imageUrl
-        ));
+        return ResponseEntity.ok(Map.of("found", true, "imageUrl", imageUrl));
     }
 }

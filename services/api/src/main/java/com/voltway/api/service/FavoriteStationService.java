@@ -24,12 +24,13 @@ public class FavoriteStationService {
     }
 
     @Transactional
-    public FavoriteStationDto add(CreateFavoriteRequest req) {
-        if (repo.existsByUserIdAndOcmStationId(req.getUserId(), req.getOcmStationId())) {
+    public FavoriteStationDto add(Long userId, CreateFavoriteRequest req) {
+        if (repo.existsByUserIdAndOcmStationId(userId, req.getOcmStationId())) {
             throw new IllegalArgumentException("Station already in favorites");
         }
-        User user = userRepository.findById(req.getUserId())
-                .orElseThrow(() -> new RuntimeException("User not found"));
+
+        User user = userRepository.findById(userId)
+                .orElseThrow(() -> new RuntimeException("User not found: " + userId));
 
         FavoriteStation f = FavoriteStation.builder()
                 .user(user)

@@ -1,5 +1,4 @@
 import { apiFetch } from './apiClient';
-import { TEMP_USER_ID } from '../config';
 
 export type Vehicle = {
   id: number;
@@ -15,7 +14,7 @@ export type Vehicle = {
 };
 
 export const vehiclesApi = {
-  list: () => apiFetch<Vehicle[]>(`/api/vehicles?userId=${TEMP_USER_ID}`),
+  list: () => apiFetch<Vehicle[]>('/api/vehicles'),
 
   create: (payload: {
     modelName: string;
@@ -28,7 +27,7 @@ export const vehiclesApi = {
   }) =>
     apiFetch<Vehicle>('/api/vehicles', {
       method: 'POST',
-      body: JSON.stringify({ userId: TEMP_USER_ID, ...payload }),
+      body: JSON.stringify(payload),
     }),
 
   delete: (id: number) =>

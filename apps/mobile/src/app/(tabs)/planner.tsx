@@ -13,11 +13,11 @@ import {
 import { SafeAreaView } from 'react-native-safe-area-context';
 import MapView, { Marker, Polyline } from 'react-native-maps';
 import * as Location from 'expo-location';
-import { geocodeAddress, GeocodingResult } from '../services/geocoding';
-import { getRoute, RouteResult } from '../services/routing';
-import { fetchStationsAlongRoute, RouteStation } from '../services/routeStations';
-import { useVehicleStore, computeChargingStops } from '../stores/vehicleStore';
-import { tripsApi } from '../services/tripsApi';
+import { geocodeAddress, GeocodingResult } from '../../services/geocoding';
+import { getRoute, RouteResult } from '../../services/routing';
+import { fetchStationsAlongRoute, RouteStation } from '../../services/routeStations';
+import { useVehicleStore, computeChargingStops } from '../../stores/vehicleStore';
+import { tripsApi } from '../../services/tripsApi';
 
 type Point = { latitude: number; longitude: number; label: string };
 
