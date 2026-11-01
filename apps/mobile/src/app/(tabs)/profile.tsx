@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useState, useCallback, useRef } from 'react';
 import {
   View,
   Text,
@@ -7,437 +7,760 @@ import {
   ScrollView,
   Pressable,
   ActivityIndicator,
-  Image,
   Alert,
+  Animated,
+  Dimensions,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { router } from 'expo-router';
-import { vehiclesApi, Vehicle } from '../../services/vehiclesApi';
-import { carImagesApi } from '../../services/carImagesApi';
-import { pingBackend } from '../../services/apiClient';
-import { authApi } from '../../services/authApi';
-import { tokenService } from '../../services/tokenService';
-import TripHistoryList from '../../components/TripHistoryList';
+import { LinearGradient } from 'expo-linear-gradient';
+import { router, useFocusEffect } from 'expo-router';
+import { vehiclesApi, Vehicle } from '../../services/vehicles';
+import { tripsApi, Trip } from '../../services/trips';
+import { useAuthStore } from '../../stores/authStore';
+import { tokenService } from '../../services/token';
 
-export default function ProfileScreen() {
+const { width, height } = Dimensions.get('window');
+
+export default function Profile() {
   const [vehicle, setVehicle] = useState<Vehicle | null>(null);
+  const [trips, setTrips] = useState<Trip[]>([]);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
-  const [backendOk, setBackendOk] = useState(false);
-  const [statusMsg, setStatusMsg] = useState('');
-
-  // 👤 Nom de personne (lié au compte JWT)
-  const [personName, setPersonName] = useState('');
 
   const [brand, setBrand] = useState('');
   const [model, setModel] = useState('');
   const [year, setYear] = useState('');
   const [autonomyKm, setAutonomyKm] = useState('');
   const [batteryKwh, setBatteryKwh] = useState('');
+  const [userName, setUserName] = useState('');
+  const [focused, setFocused] = useState<string | null>(null);
 
-  const [imageUrl, setImageUrl] = useState<string | null>(null);
-  const [imageLoading, setImageLoading] = useState(false);
-  const [searchTimer, setSearchTimer] = useState<ReturnType<typeof setTimeout> | null>(null);
+  const logout = useAuthStore((s) => s.logout);
 
-  useEffect(() => {
-    (async () => {
-      // Charge le nom de l'utilisateur depuis SecureStore
-      const stored = await tokenService.getUser();
-      if (stored) setPersonName(stored.name ?? '');
+  const auroraShift = useRef(new Animated.Value(0)).current;
+  const shimmer = useRef(new Animated.Value(0)).current;
+  const fadeIn = useRef(new Animated.Value(0)).current;
+  const haloPulse = useRef(new Animated.Value(0)).current;
 
-      const ok = await pingBackend();
-      setBackendOk(ok);
-      if (!ok) {
-        setLoading(false);
-        setStatusMsg("Backend injoignable — vérifie l'IP dans src/config.ts");
-        return;
-      }
-      try {
-        const list = await vehiclesApi.list();
-        if (list.length > 0) {
-          const v = list[0];
-          setVehicle(v);
-          setBrand(v.brand ?? '');
-          setModel(v.model ?? '');
-          setYear(v.year ? String(v.year) : '');
-          setAutonomyKm(String(v.autonomyKm));
-          setBatteryKwh(String(v.batteryKwh));
-          setImageUrl(v.imageUrl ?? null);
+  useState(() => {
+    Animated.loop(
+      Animated.sequence([
+        Animated.timing(auroraShift, {
+          toValue: 1,
+          duration: 14000,
+          useNativeDriver: true,
+        }),
+        Animated.timing(auroraShift, {
+          toValue: 0,
+          duration: 14000,
+          useNativeDriver: true,
+        }),
+      ])
+    ).start();
+
+    Animated.loop(
+      Animated.timing(shimmer, {
+        toValue: 1,
+        duration: 2500,
+        useNativeDriver: true,
+      })
+    ).start();
+
+    Animated.loop(
+      Animated.sequence([
+        Animated.timing(haloPulse, {
+          toValue: 1,
+          duration: 2000,
+          useNativeDriver: true,
+        }),
+        Animated.timing(haloPulse, {
+          toValue: 0,
+          duration: 2000,
+          useNativeDriver: true,
+        }),
+      ])
+    ).start();
+
+    Animated.timing(fadeIn, {
+      toValue: 1,
+      duration: 500,
+      useNativeDriver: true,
+    }).start();
+  });
+
+  useFocusEffect(
+    useCallback(() => {
+      let cancelled = false;
+      (async () => {
+        setLoading(true);
+        try {
+          const stored = await tokenService.getUser();
+          if (stored && !cancelled) setUserName(stored.name);
+
+          const list = await vehiclesApi.list();
+          if (!cancelled && list.length) {
+            const v = list[0];
+            setVehicle(v);
+            setBrand(v.brand ?? '');
+            setModel(v.model ?? '');
+            setYear(v.year ? String(v.year) : '');
+            setAutonomyKm(String(v.autonomyKm));
+            setBatteryKwh(String(v.batteryKwh));
+          }
+
+          const t = await tripsApi.list();
+          if (!cancelled) setTrips(t);
+        } catch (e) {
+          console.warn(e);
+        } finally {
+          if (!cancelled) setLoading(false);
         }
-      } catch (e) {
-        console.warn(e);
-      } finally {
-        setLoading(false);
-      }
-    })();
-  }, []);
-
-  // 🔍 Auto-recherche d'image (debounce 800ms)
-  useEffect(() => {
-    if (!brand.trim() || !model.trim()) return;
-    if (searchTimer) clearTimeout(searchTimer);
-
-    const timer = setTimeout(async () => {
-      setImageLoading(true);
-      try {
-        const res = await carImagesApi.find(
-          brand.trim(),
-          model.trim(),
-          year ? Number(year) : undefined
-        );
-        if (res.found && res.imageUrl) setImageUrl(res.imageUrl);
-        else setImageUrl(null);
-      } catch {
-        setImageUrl(null);
-      } finally {
-        setImageLoading(false);
-      }
-    }, 800);
-
-    setSearchTimer(timer);
-    return () => clearTimeout(timer);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [brand, model, year]);
+      })();
+      return () => {
+        cancelled = true;
+      };
+    }, [])
+  );
 
   async function save() {
-    if (!backendOk) return;
+    if (!brand || !model) return Alert.alert('Marque et modèle requis');
     setSaving(true);
-    setStatusMsg('');
-
-    const autoModelName =
-      [brand.trim(), model.trim()].filter(Boolean).join(' ') || 'Ma voiture';
-
     try {
+      const modelName = `${brand} ${model}`.trim();
       if (vehicle) await vehiclesApi.delete(vehicle.id);
       const created = await vehiclesApi.create({
-        modelName: autoModelName,
-        brand: brand || undefined,
-        model: model || undefined,
+        modelName,
+        brand,
+        model,
         year: year ? Number(year) : undefined,
-        imageUrl: imageUrl ?? undefined,
         autonomyKm: Number(autonomyKm) || 350,
         batteryKwh: Number(batteryKwh) || 60,
       });
       setVehicle(created);
-      setStatusMsg('✅ Enregistré en BDD');
+      Alert.alert('✅ Enregistré');
     } catch (e: any) {
-      setStatusMsg(`❌ ${e.message}`);
+      Alert.alert('Erreur', e.message);
     } finally {
       setSaving(false);
     }
   }
 
-  // 🚪 Déconnexion
-  function handleLogout() {
-    Alert.alert(
-      'Se déconnecter ?',
-      'Vous devrez vous reconnecter pour accéder à VoltWay.',
-      [
-        { text: 'Annuler', style: 'cancel' },
-        {
-          text: 'Déconnecter',
-          style: 'destructive',
-          onPress: async () => {
-            try {
-              await authApi.logout();
-              console.log('[Profile] ✓ Déconnecté');
-              router.replace('/auth/login');
-            } catch (e) {
-              console.warn('[Profile] logout error:', e);
-            }
-          },
+  async function handleLogout() {
+    Alert.alert('Déconnexion', 'Veux-tu vraiment te déconnecter ?', [
+      { text: 'Annuler', style: 'cancel' },
+      {
+        text: 'Se déconnecter',
+        style: 'destructive',
+        onPress: async () => {
+          await logout();
+          router.replace('/auth/login');
         },
-      ]
-    );
+      },
+    ]);
   }
+
+  const auroraX = auroraShift.interpolate({
+    inputRange: [0, 1],
+    outputRange: [-width * 0.2, width * 0.2],
+  });
+  const auroraXNeg = auroraShift.interpolate({
+    inputRange: [0, 1],
+    outputRange: [width * 0.2, -width * 0.2],
+  });
+  const shimmerX = shimmer.interpolate({
+    inputRange: [0, 1],
+    outputRange: [-250, 400],
+  });
+  const haloScale = haloPulse.interpolate({
+    inputRange: [0, 1],
+    outputRange: [1, 1.4],
+  });
+  const haloOpacity = haloPulse.interpolate({
+    inputRange: [0, 1],
+    outputRange: [0.5, 0],
+  });
+
+  const initial = (userName || 'V').charAt(0).toUpperCase();
+  const totalKm = trips.reduce((sum, t) => sum + t.distanceKm, 0);
+  const displayAutonomy = vehicle?.autonomyKm ?? 0;
 
   if (loading) {
     return (
-      <View style={styles.center}>
-        <ActivityIndicator size="large" color="#d97706" />
+      <View style={styles.loadingRoot}>
+        <ActivityIndicator size="large" color="#22c55e" />
         <Text style={styles.loadingText}>Chargement…</Text>
       </View>
     );
   }
 
   return (
-    <SafeAreaView style={styles.container} edges={['top']}>
-      <ScrollView contentContainerStyle={styles.scroll}>
-        <View style={styles.headerRow}>
-          <View style={{ flex: 1 }}>
-            <Text style={styles.title}>👤 Mon profil</Text>
-            <Text style={styles.subtitle}>
-              {backendOk ? '🟢 Backend connecté' : '🔴 Backend injoignable'}
-            </Text>
-          </View>
-          <Pressable
-            style={styles.logoutBtnTop}
-            onPress={handleLogout}
-            hitSlop={8}
-          >
-            <Text style={styles.logoutIcon}>🚪</Text>
-          </Pressable>
-        </View>
-
-        {/* 👤 Nom de personne */}
-        <Text style={styles.label}>Nom de personne</Text>
-        <TextInput
-          style={styles.input}
-          value={personName}
-          onChangeText={setPersonName}
-          placeholder="ex: Nabil"
-          editable={false}
+    <View style={styles.root}>
+      <Animated.View
+        style={[styles.auroraLayer, { transform: [{ translateX: auroraX }] }]}
+      >
+        <LinearGradient
+          colors={['#052e16', '#0d2818', '#050a08']}
+          start={{ x: 0, y: 0 }}
+          end={{ x: 1, y: 1 }}
+          style={styles.fill}
         />
-        <Text style={styles.hint}>Modifiable après la prochaine version</Text>
+      </Animated.View>
 
-        {/* 🚗 Véhicule */}
-        <Text style={styles.sectionTitle}>🚗 Mon véhicule</Text>
+      <Animated.View
+        style={[
+          styles.auroraBlob,
+          styles.blob1,
+          { transform: [{ translateX: auroraX }] },
+        ]}
+      >
+        <LinearGradient colors={['#166534', 'transparent']} style={styles.fill} />
+      </Animated.View>
 
-        <View style={styles.imageWrap}>
-          {imageUrl ? (
-            <Image source={{ uri: imageUrl }} style={styles.image} />
-          ) : (
-            <View style={styles.imagePlaceholder}>
-              <Text style={styles.imageEmoji}>🚗</Text>
-              <Text style={styles.imagePlaceholderLabel}>
-                {imageLoading
-                  ? 'Recherche…'
-                  : brand && model
-                  ? 'Aucune photo trouvée'
-                  : 'Renseigne marque + modèle'}
-              </Text>
-            </View>
-          )}
-          {imageLoading && (
-            <View style={styles.imageLoadingOverlay}>
-              <ActivityIndicator color="#d97706" size="large" />
-            </View>
-          )}
-        </View>
+      <Animated.View
+        style={[
+          styles.auroraBlob,
+          styles.blob2,
+          { transform: [{ translateX: auroraXNeg }] },
+        ]}
+      >
+        <LinearGradient colors={['#14532d', 'transparent']} style={styles.fill} />
+      </Animated.View>
 
-        <Text style={styles.label}>Marque</Text>
-        <TextInput
-          style={styles.input}
-          value={brand}
-          onChangeText={setBrand}
-          placeholder="ex: Tesla"
-        />
-
-        <Text style={styles.label}>Modèle</Text>
-        <TextInput
-          style={styles.input}
-          value={model}
-          onChangeText={setModel}
-          placeholder="ex: Model 3"
-        />
-
-        <Text style={styles.label}>Année</Text>
-        <TextInput
-          style={styles.input}
-          value={year}
-          onChangeText={setYear}
-          placeholder="ex: 2023"
-          keyboardType="numeric"
-        />
-
-        <Text style={styles.label}>Autonomie réelle (km)</Text>
-        <TextInput
-          style={styles.input}
-          value={autonomyKm}
-          onChangeText={setAutonomyKm}
-          keyboardType="numeric"
-        />
-
-        <Text style={styles.label}>Capacité batterie (kWh)</Text>
-        <TextInput
-          style={styles.input}
-          value={batteryKwh}
-          onChangeText={setBatteryKwh}
-          keyboardType="numeric"
-        />
-
-        <Pressable
-          style={[
-            styles.saveBtn,
-            (saving || !backendOk) && styles.saveBtnDisabled,
-          ]}
-          onPress={save}
-          disabled={saving || !backendOk}
+      <SafeAreaView style={styles.safe} edges={['top']}>
+        <ScrollView
+          contentContainerStyle={styles.scrollContent}
+          showsVerticalScrollIndicator={false}
         >
-          {saving ? (
-            <ActivityIndicator color="#fff" />
-          ) : (
-            <Text style={styles.saveText}>💾 Enregistrer</Text>
-          )}
-        </Pressable>
+          <Animated.View style={{ opacity: fadeIn }}>
+            {/* HEADER */}
+            <View style={styles.header}>
+              <View style={styles.avatarWrap}>
+                <Animated.View
+                  style={[
+                    styles.avatarHalo,
+                    { opacity: haloOpacity, transform: [{ scale: haloScale }] },
+                  ]}
+                />
+                <LinearGradient
+                  colors={['#22c55e', '#16a34a']}
+                  start={{ x: 0, y: 0 }}
+                  end={{ x: 1, y: 1 }}
+                  style={styles.avatar}
+                >
+                  <Text style={styles.avatarText}>{initial}</Text>
+                </LinearGradient>
+              </View>
+              <View style={{ flex: 1 }}>
+                <Text style={styles.greeting}>Bonjour,</Text>
+                <Text style={styles.userName} numberOfLines={1}>
+                  {userName || 'Conducteur'}
+                </Text>
+              </View>
+            </View>
 
-        {statusMsg ? <Text style={styles.status}>{statusMsg}</Text> : null}
+            {/* STATS : KM CUMULÉS · TRAJETS · AUTONOMIE */}
+            <View style={styles.statsRow}>
+              <View style={styles.statCard}>
+                <Text style={styles.statEmoji}>🛣️</Text>
+                <Text style={styles.statValue}>{totalKm.toFixed(0)}</Text>
+                <Text style={styles.statLabel}>KM CUMULÉS</Text>
+              </View>
+              <View style={styles.statCard}>
+                <Text style={styles.statEmoji}>🧭</Text>
+                <Text style={styles.statValue}>{trips.length}</Text>
+                <Text style={styles.statLabel}>TRAJETS</Text>
+              </View>
+              <View style={styles.statCard}>
+                <Text style={styles.statEmoji}>⚡</Text>
+                <Text style={styles.statValue}>
+                  {displayAutonomy > 0 ? displayAutonomy : '—'}
+                </Text>
+                <Text style={styles.statLabel}>KM AUTONOMIE</Text>
+              </View>
+            </View>
 
-        {vehicle && (
-          <View style={styles.infoBox}>
-            <Text style={styles.infoTitle}>Véhicule actuel (BDD)</Text>
-            <Text style={styles.infoText}>
-              {vehicle.brand ? `${vehicle.brand} ` : ''}
-              {vehicle.model ?? vehicle.modelName}
-              {vehicle.year ? ` (${vehicle.year})` : ''}
+            {/* VÉHICULE */}
+            <View style={styles.sectionHeader}>
+              <Text style={styles.sectionTitle}>🚗 Mon véhicule</Text>
+              {vehicle && (
+                <View style={styles.badge}>
+                  <Text style={styles.badgeText}>⚡ Électrique</Text>
+                </View>
+              )}
+            </View>
+
+            <View style={styles.card}>
+              {vehicle && (
+                <View style={styles.vehiclePreview}>
+                  <Text style={styles.vehiclePreviewName}>
+                    {vehicle.brand} {vehicle.model}
+                  </Text>
+                  {vehicle.year && (
+                    <Text style={styles.vehiclePreviewYear}>
+                      {vehicle.year}
+                    </Text>
+                  )}
+                </View>
+              )}
+
+              <Text style={styles.label}>Marque</Text>
+              <TextInput
+                style={[
+                  styles.input,
+                  focused === 'brand' && styles.inputFocused,
+                ]}
+                value={brand}
+                onChangeText={setBrand}
+                placeholder="Tesla"
+                placeholderTextColor="#475569"
+                onFocus={() => setFocused('brand')}
+                onBlur={() => setFocused(null)}
+              />
+
+              <Text style={styles.label}>Modèle</Text>
+              <TextInput
+                style={[
+                  styles.input,
+                  focused === 'model' && styles.inputFocused,
+                ]}
+                value={model}
+                onChangeText={setModel}
+                placeholder="Model 3"
+                placeholderTextColor="#475569"
+                onFocus={() => setFocused('model')}
+                onBlur={() => setFocused(null)}
+              />
+
+              <View style={styles.row}>
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.label}>Année</Text>
+                  <TextInput
+                    style={[
+                      styles.input,
+                      focused === 'year' && styles.inputFocused,
+                    ]}
+                    value={year}
+                    onChangeText={setYear}
+                    keyboardType="numeric"
+                    placeholder="2024"
+                    placeholderTextColor="#475569"
+                    onFocus={() => setFocused('year')}
+                    onBlur={() => setFocused(null)}
+                  />
+                </View>
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.label}>Batterie (kWh)</Text>
+                  <TextInput
+                    style={[
+                      styles.input,
+                      focused === 'battery' && styles.inputFocused,
+                    ]}
+                    value={batteryKwh}
+                    onChangeText={setBatteryKwh}
+                    keyboardType="numeric"
+                    placeholder="60"
+                    placeholderTextColor="#475569"
+                    onFocus={() => setFocused('battery')}
+                    onBlur={() => setFocused(null)}
+                  />
+                </View>
+              </View>
+
+              <Text style={styles.label}>Autonomie (km)</Text>
+              <TextInput
+                style={[
+                  styles.input,
+                  focused === 'autonomy' && styles.inputFocused,
+                ]}
+                value={autonomyKm}
+                onChangeText={setAutonomyKm}
+                keyboardType="numeric"
+                placeholder="350"
+                placeholderTextColor="#475569"
+                onFocus={() => setFocused('autonomy')}
+                onBlur={() => setFocused(null)}
+              />
+
+              <View style={styles.saveBtnWrapper}>
+                <View style={styles.saveBtn}>
+                  <LinearGradient
+                    colors={['#22c55e', '#16a34a']}
+                    start={{ x: 0, y: 0 }}
+                    end={{ x: 1, y: 0 }}
+                    style={styles.fill}
+                  />
+                  <Animated.View
+                    style={[
+                      styles.shimmerBar,
+                      { transform: [{ translateX: shimmerX }] },
+                    ]}
+                  >
+                    <LinearGradient
+                      colors={[
+                        'transparent',
+                        'rgba(255,255,255,0.4)',
+                        'transparent',
+                      ]}
+                      start={{ x: 0, y: 0 }}
+                      end={{ x: 1, y: 0 }}
+                      style={styles.fill}
+                    />
+                  </Animated.View>
+                  <Pressable
+                    onPress={save}
+                    disabled={saving}
+                    style={styles.saveBtnInner}
+                  >
+                    {saving ? (
+                      <ActivityIndicator color="#050a08" />
+                    ) : (
+                      <Text style={styles.saveText}>💾 Enregistrer</Text>
+                    )}
+                  </Pressable>
+                </View>
+              </View>
+            </View>
+
+            {/* TRAJETS */}
+            <Text style={styles.sectionTitle}>
+              🧭 Mes trajets ({trips.length})
             </Text>
-            <Text style={styles.infoText}>
-              {vehicle.autonomyKm} km · {vehicle.batteryKwh} kWh
-            </Text>
-            <Text style={styles.infoText}>
-              Autonomie utile (marge 20%) :{' '}
-              {Math.round(vehicle.autonomyKm * 0.8)} km
-            </Text>
-          </View>
-        )}
 
-        {/* 🧭 Historique trajets */}
-        <TripHistoryList />
+            {trips.length === 0 ? (
+              <View style={styles.emptyCard}>
+                <Text style={styles.emptyEmoji}>🗺️</Text>
+                <Text style={styles.emptyText}>
+                  Aucun trajet sauvegardé.{'\n'}
+                  Lance-toi depuis l'onglet Planifier !
+                </Text>
+              </View>
+            ) : (
+              trips.map((t) => (
+                <View key={t.id} style={styles.tripCard}>
+                  <View style={styles.tripDot} />
+                  <View style={{ flex: 1 }}>
+                    <Text style={styles.tripTitle} numberOfLines={1}>
+                      {t.startLabel.split(',')[0]} → {t.endLabel.split(',')[0]}
+                    </Text>
+                    <Text style={styles.tripMeta}>
+                      {t.distanceKm.toFixed(0)} km ·{' '}
+                      {Math.floor(t.durationS / 60)} min
+                    </Text>
+                  </View>
+                  <Text style={styles.tripArrow}>›</Text>
+                </View>
+              ))
+            )}
 
-        {/* 🚪 Bouton déconnexion (en bas) */}
-        <Pressable style={styles.logoutBtnBottom} onPress={handleLogout}>
-          <Text style={styles.logoutTextBottom}>🚪 Se déconnecter</Text>
-        </Pressable>
-      </ScrollView>
-    </SafeAreaView>
+            {/* DÉCONNEXION */}
+            <Pressable
+              style={({ pressed }) => [
+                styles.logoutBtn,
+                pressed && { opacity: 0.85 },
+              ]}
+              onPress={handleLogout}
+            >
+              <Text style={styles.logoutIcon}>⏻</Text>
+              <Text style={styles.logoutText}>Déconnexion</Text>
+            </Pressable>
+
+            <Text style={styles.footer}>v2.0 · Électrise ta route ⚡</Text>
+          </Animated.View>
+        </ScrollView>
+      </SafeAreaView>
+    </View>
   );
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: '#fef3c7' },
-  center: {
-    flex: 1,
-    justifyContent: 'center',
-    alignItems: 'center',
-    backgroundColor: '#fef3c7',
-  },
-  loadingText: { marginTop: 12, color: '#92400e', fontWeight: '600' },
-  scroll: { padding: 20, paddingBottom: 60 },
-
-  headerRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    marginBottom: 8,
-  },
-  title: {
-    fontSize: 28,
-    fontWeight: 'bold',
-    color: '#d97706',
-    marginBottom: 4,
-  },
-  subtitle: { fontSize: 14, color: '#92400e' },
-  logoutBtnTop: {
-    width: 44,
-    height: 44,
-    borderRadius: 22,
-    backgroundColor: '#fff',
-    justifyContent: 'center',
-    alignItems: 'center',
-    borderWidth: 1,
-    borderColor: '#fca5a5',
-  },
-  logoutIcon: { fontSize: 20 },
-
-  sectionTitle: {
-    fontSize: 18,
-    fontWeight: '700',
-    color: '#92400e',
-    marginTop: 24,
-    marginBottom: 12,
-  },
-  imageWrap: {
-    width: '100%',
-    height: 180,
-    borderRadius: 14,
-    overflow: 'hidden',
-    backgroundColor: '#fff',
-    marginBottom: 16,
-    borderWidth: 1,
-    borderColor: '#e2e8f0',
-  },
-  image: { width: '100%', height: '100%', resizeMode: 'cover' },
-  imagePlaceholder: {
-    flex: 1,
-    justifyContent: 'center',
-    alignItems: 'center',
-    backgroundColor: '#fffbeb',
-  },
-  imageEmoji: { fontSize: 56, marginBottom: 6 },
-  imagePlaceholderLabel: {
-    color: '#92400e',
-    fontWeight: '600',
-    textAlign: 'center',
-    paddingHorizontal: 20,
-  },
-  imageLoadingOverlay: {
+  root: { flex: 1, backgroundColor: '#050a08' },
+  safe: { flex: 1 },
+  scrollContent: { paddingHorizontal: 20, paddingBottom: 40 },
+  fill: {
     position: 'absolute',
     top: 0,
     left: 0,
     right: 0,
     bottom: 0,
-    backgroundColor: 'rgba(255,255,255,0.7)',
+  },
+  loadingRoot: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+    backgroundColor: '#050a08',
+  },
+  loadingText: { color: '#86efac', marginTop: 12, fontSize: 13 },
+
+  auroraLayer: {
+    position: 'absolute',
+    top: -100,
+    left: -100,
+    width: width * 1.5,
+    height: height * 1.5,
+  },
+  auroraBlob: {
+    position: 'absolute',
+    width: width * 0.9,
+    height: width * 0.9,
+    borderRadius: width * 0.45,
+    overflow: 'hidden',
+  },
+  blob1: { top: -100, left: -150 },
+  blob2: { bottom: -150, right: -150 },
+
+  header: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingTop: 12,
+    paddingBottom: 20,
+    gap: 14,
+  },
+  avatarWrap: {
+    width: 62,
+    height: 62,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  avatarHalo: {
+    position: 'absolute',
+    width: 62,
+    height: 62,
+    borderRadius: 31,
+    backgroundColor: '#22c55e',
+  },
+  avatar: {
+    width: 62,
+    height: 62,
+    borderRadius: 31,
     justifyContent: 'center',
     alignItems: 'center',
   },
+  avatarText: {
+    color: '#050a08',
+    fontSize: 26,
+    fontWeight: '800',
+  },
+  greeting: {
+    color: '#86efac',
+    fontSize: 12,
+    letterSpacing: 1.5,
+    textTransform: 'uppercase',
+    opacity: 0.8,
+  },
+  userName: {
+    color: '#f0fdf4',
+    fontSize: 24,
+    fontWeight: '800',
+    letterSpacing: -0.5,
+  },
 
-  label: {
-    fontSize: 13,
-    fontWeight: '700',
-    color: '#334155',
-    marginTop: 14,
-    marginBottom: 6,
-  },
-  hint: {
-    fontSize: 11,
-    color: '#94a3b8',
-    fontStyle: 'italic',
-    marginTop: 4,
-  },
-  input: {
-    backgroundColor: '#fff',
-    borderRadius: 10,
-    paddingHorizontal: 14,
-    paddingVertical: 12,
-    fontSize: 14,
-    borderWidth: 1,
-    borderColor: '#cbd5e1',
-    color: '#0f172a',
-  },
-  saveBtn: {
-    marginTop: 24,
-    backgroundColor: '#d97706',
-    paddingVertical: 14,
-    borderRadius: 10,
-    alignItems: 'center',
-  },
-  saveBtnDisabled: { backgroundColor: '#94a3b8' },
-  saveText: { color: '#fff', fontWeight: '700', fontSize: 15 },
-  status: { marginTop: 12, textAlign: 'center', color: '#475569' },
-  infoBox: {
-    backgroundColor: '#fff',
-    borderRadius: 12,
-    padding: 16,
-    marginTop: 24,
-    borderWidth: 1,
-    borderColor: '#e2e8f0',
-  },
-  infoTitle: {
-    fontSize: 14,
-    fontWeight: '700',
-    color: '#0f172a',
+  // STATS (3 cartes)
+  statsRow: {
+    flexDirection: 'row',
+    gap: 8,
     marginBottom: 8,
   },
-  infoText: { fontSize: 13, color: '#475569', marginBottom: 4 },
-
-  logoutBtnBottom: {
-    marginTop: 30,
-    marginBottom: 20,
-    paddingVertical: 14,
-    borderRadius: 10,
-    backgroundColor: '#fee2e2',
+  statCard: {
+    flex: 1,
+    backgroundColor: 'rgba(15,23,20,0.85)',
+    borderRadius: 16,
+    paddingVertical: 16,
+    paddingHorizontal: 8,
     alignItems: 'center',
     borderWidth: 1,
-    borderColor: '#fca5a5',
+    borderColor: 'rgba(34,197,94,0.25)',
   },
-  logoutTextBottom: { color: '#dc2626', fontWeight: '700', fontSize: 14 },
+  statEmoji: { fontSize: 20, marginBottom: 6 },
+  statValue: {
+    fontSize: 22,
+    fontWeight: '800',
+    color: '#22c55e',
+    letterSpacing: -0.5,
+  },
+  statLabel: {
+    fontSize: 9,
+    fontWeight: '800',
+    color: '#86efac',
+    letterSpacing: 0.8,
+    marginTop: 4,
+    opacity: 0.8,
+    textTransform: 'uppercase',
+    textAlign: 'center',
+  },
+
+  sectionHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginTop: 24,
+    marginBottom: 12,
+  },
+  sectionTitle: {
+    fontSize: 13,
+    fontWeight: '800',
+    color: '#86efac',
+    letterSpacing: 1.5,
+    textTransform: 'uppercase',
+    marginTop: 24,
+    marginBottom: 12,
+  },
+  badge: {
+    backgroundColor: 'rgba(34,197,94,0.15)',
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: 'rgba(34,197,94,0.3)',
+  },
+  badgeText: {
+    color: '#4ade80',
+    fontSize: 10,
+    fontWeight: '800',
+    letterSpacing: 1,
+  },
+
+  card: {
+    backgroundColor: 'rgba(15,23,20,0.85)',
+    borderRadius: 20,
+    padding: 20,
+    borderWidth: 1,
+    borderColor: 'rgba(34,197,94,0.2)',
+  },
+  vehiclePreview: {
+    paddingBottom: 14,
+    marginBottom: 14,
+    borderBottomWidth: 1,
+    borderBottomColor: 'rgba(34,197,94,0.15)',
+  },
+  vehiclePreviewName: {
+    color: '#f0fdf4',
+    fontSize: 20,
+    fontWeight: '800',
+  },
+  vehiclePreviewYear: {
+    color: '#86efac',
+    fontSize: 12,
+    marginTop: 2,
+    opacity: 0.8,
+  },
+  label: {
+    fontSize: 11,
+    fontWeight: '700',
+    color: '#86efac',
+    marginBottom: 6,
+    marginTop: 12,
+    letterSpacing: 1.2,
+    textTransform: 'uppercase',
+  },
+  input: {
+    backgroundColor: '#0a1410',
+    borderRadius: 12,
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+    fontSize: 15,
+    color: '#f0fdf4',
+    borderWidth: 1,
+    borderColor: '#1e293b',
+  },
+  inputFocused: { borderColor: '#22c55e' },
+  row: { flexDirection: 'row', gap: 12 },
+
+  saveBtnWrapper: {
+    marginTop: 20,
+    borderRadius: 12,
+    overflow: 'hidden',
+    shadowColor: '#22c55e',
+    shadowOpacity: 0.4,
+    shadowRadius: 14,
+    shadowOffset: { width: 0, height: 4 },
+    elevation: 8,
+  },
+  saveBtn: { overflow: 'hidden' },
+  saveBtnInner: {
+    paddingVertical: 15,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  shimmerBar: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    width: 150,
+    height: '100%',
+  },
+  saveText: {
+    color: '#050a08',
+    fontSize: 15,
+    fontWeight: '800',
+    letterSpacing: 0.3,
+  },
+
+  emptyCard: {
+    backgroundColor: 'rgba(15,23,20,0.6)',
+    borderRadius: 16,
+    padding: 24,
+    alignItems: 'center',
+    borderWidth: 1,
+    borderStyle: 'dashed',
+    borderColor: 'rgba(34,197,94,0.2)',
+  },
+  emptyEmoji: { fontSize: 36, marginBottom: 8, opacity: 0.7 },
+  emptyText: {
+    color: '#64748b',
+    fontSize: 13,
+    textAlign: 'center',
+    lineHeight: 20,
+  },
+  tripCard: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: 'rgba(15,23,20,0.75)',
+    borderRadius: 14,
+    padding: 14,
+    marginBottom: 8,
+    borderWidth: 1,
+    borderColor: 'rgba(34,197,94,0.12)',
+  },
+  tripDot: {
+    width: 8,
+    height: 8,
+    borderRadius: 4,
+    backgroundColor: '#22c55e',
+    marginRight: 12,
+    shadowColor: '#22c55e',
+    shadowOpacity: 1,
+    shadowRadius: 6,
+    shadowOffset: { width: 0, height: 0 },
+  },
+  tripTitle: { color: '#f0fdf4', fontSize: 14, fontWeight: '700' },
+  tripMeta: { color: '#64748b', fontSize: 12, marginTop: 3 },
+  tripArrow: { color: '#22c55e', fontSize: 22, opacity: 0.5 },
+
+  logoutBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 10,
+    marginTop: 32,
+    paddingVertical: 15,
+    borderRadius: 14,
+    backgroundColor: 'rgba(239,68,68,0.1)',
+    borderWidth: 1,
+    borderColor: 'rgba(239,68,68,0.4)',
+  },
+  logoutIcon: { color: '#ef4444', fontSize: 18, fontWeight: '800' },
+  logoutText: {
+    color: '#ef4444',
+    fontSize: 15,
+    fontWeight: '800',
+    letterSpacing: 0.5,
+  },
+
+  footer: {
+    textAlign: 'center',
+    color: '#334155',
+    fontSize: 11,
+    marginTop: 24,
+    letterSpacing: 1,
+  },
 });

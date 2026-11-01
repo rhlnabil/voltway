@@ -1,36 +1,27 @@
-export type RouteResult = {
+export type Route = {
   distanceMeters: number;
   durationSeconds: number;
   coordinates: { latitude: number; longitude: number }[];
 };
 
-const OSRM_URL = 'https://router.project-osrm.org/route/v1/driving';
-
-/**
- * Calcule un itinéraire routier entre 2 points (OSRM, gratuit).
- */
 export async function getRoute(
   start: { latitude: number; longitude: number },
   end: { latitude: number; longitude: number }
-): Promise<RouteResult | null> {
+): Promise<Route | null> {
   const coords = `${start.longitude},${start.latitude};${end.longitude},${end.latitude}`;
-  const url = `${OSRM_URL}/${coords}?overview=full&geometries=geojson`;
+  const url = `https://router.project-osrm.org/route/v1/driving/${coords}?overview=full&geometries=geojson`;
 
-  const response = await fetch(url);
-  if (!response.ok) {
-    throw new Error(`OSRM error: ${response.status}`);
-  }
+  const res = await fetch(url);
+  if (!res.ok) throw new Error(`OSRM ${res.status}`);
+  const data = await res.json();
+  if (!data.routes?.length) return null;
 
-  const data = await response.json();
-  if (!data.routes || data.routes.length === 0) return null;
-
-  const route = data.routes[0];
+  const r = data.routes[0];
   return {
-    distanceMeters: route.distance,
-    durationSeconds: route.duration,
-    coordinates: route.geometry.coordinates.map(([lon, lat]: [number, number]) => ({
-      latitude: lat,
-      longitude: lon,
-    })),
+    distanceMeters: r.distance,
+    durationSeconds: r.duration,
+    coordinates: r.geometry.coordinates.map(
+      ([lon, lat]: [number, number]) => ({ latitude: lat, longitude: lon })
+    ),
   };
 }

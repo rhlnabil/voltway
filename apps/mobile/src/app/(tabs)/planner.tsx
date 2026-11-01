@@ -1,4 +1,4 @@
-import { useRef, useState } from 'react';
+import { useState, useRef, useCallback } from 'react';
 import {
   View,
   Text,
@@ -7,554 +7,1003 @@ import {
   Pressable,
   ScrollView,
   ActivityIndicator,
-  KeyboardAvoidingView,
+  Alert,
   Platform,
+  Animated,
+  Dimensions,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import MapView, { Marker, Polyline } from 'react-native-maps';
+import { LinearGradient } from 'expo-linear-gradient';
 import * as Location from 'expo-location';
-import { geocodeAddress, GeocodingResult } from '../../services/geocoding';
-import { getRoute, RouteResult } from '../../services/routing';
-import { fetchStationsAlongRoute, RouteStation } from '../../services/routeStations';
-import { useVehicleStore, computeChargingStops } from '../../stores/vehicleStore';
-import { tripsApi } from '../../services/tripsApi';
+import { router, useFocusEffect } from 'expo-router';
+import { geocode } from '../../services/geocoding';
+import { getRoute, Route } from '../../services/routing';
+import { tripsApi } from '../../services/trips';
+import { vehiclesApi } from '../../services/vehicles';
+
+const { width, height } = Dimensions.get('window');
+
+let MapView: any = null;
+let Marker: any = null;
+let Polyline: any = null;
+if (Platform.OS !== 'web') {
+  const RNMaps = require('react-native-maps');
+  MapView = RNMaps.default;
+  Marker = RNMaps.Marker;
+  Polyline = RNMaps.Polyline;
+}
 
 type Point = { latitude: number; longitude: number; label: string };
 
-export default function PlannerScreen() {
-  const vehicle = useVehicleStore((s) => s.vehicle);
-
+export default function Planner() {
   const [startQuery, setStartQuery] = useState('');
   const [endQuery, setEndQuery] = useState('');
-  const [startSugg, setStartSugg] = useState<GeocodingResult[]>([]);
-  const [endSugg, setEndSugg] = useState<GeocodingResult[]>([]);
-  const [startSearching, setStartSearching] = useState(false);
-  const [endSearching, setEndSearching] = useState(false);
   const [start, setStart] = useState<Point | null>(null);
   const [end, setEnd] = useState<Point | null>(null);
-  const [route, setRoute] = useState<RouteResult | null>(null);
-  const [routeStations, setRouteStations] = useState<RouteStation[]>([]);
+  const [route, setRoute] = useState<Route | null>(null);
   const [loading, setLoading] = useState(false);
-  const [loadingMsg, setLoadingMsg] = useState('');
-  const [error, setError] = useState<string | null>(null);
-  const [savedTripId, setSavedTripId] = useState<number | null>(null);
+  const [accepted, setAccepted] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [focused, setFocused] = useState<'start' | 'end' | null>(null);
+  const [vehicleAutonomy, setVehicleAutonomy] = useState<number>(0);
+  const [vehicleLoaded, setVehicleLoaded] = useState(false);
 
-  const searchTimerStart = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const searchTimerEnd = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const auroraShift = useRef(new Animated.Value(0)).current;
+  const shimmer = useRef(new Animated.Value(0)).current;
 
-  // 🔍 Recherche avec debounce 400ms + biais géographique
-  async function search(query: string, which: 'start' | 'end') {
-    const timerRef = which === 'start' ? searchTimerStart : searchTimerEnd;
-    if (timerRef.current) clearTimeout(timerRef.current);
+  // Animations globales
+  useState(() => {
+    Animated.loop(
+      Animated.sequence([
+        Animated.timing(auroraShift, {
+          toValue: 1,
+          duration: 14000,
+          useNativeDriver: true,
+        }),
+        Animated.timing(auroraShift, {
+          toValue: 0,
+          duration: 14000,
+          useNativeDriver: true,
+        }),
+      ])
+    ).start();
 
-    if (query.trim().length < 3) {
-      if (which === 'start') setStartSugg([]);
-      else setEndSugg([]);
-      return;
-    }
+    Animated.loop(
+      Animated.timing(shimmer, {
+        toValue: 1,
+        duration: 2500,
+        useNativeDriver: true,
+      })
+    ).start();
+  });
 
-    timerRef.current = setTimeout(async () => {
-      if (which === 'start') setStartSearching(true);
-      else setEndSearching(true);
-
-      try {
-        // Biais vers la position de départ si connue
-        const results = await geocodeAddress(
-          query,
-          start?.latitude,
-          start?.longitude
-        );
-        if (which === 'start') setStartSugg(results);
-        else setEndSugg(results);
-      } catch (e) {
-        console.warn('[VoltWay] geocode', e);
-      } finally {
-        if (which === 'start') setStartSearching(false);
-        else setEndSearching(false);
-      }
-    }, 400);
-  }
+  // ⭐ Recharge l'autonomie du véhicule à chaque focus (retour depuis Profil)
+  useFocusEffect(
+    useCallback(() => {
+      let cancelled = false;
+      (async () => {
+        try {
+          const vs = await vehiclesApi.list();
+          if (!cancelled) {
+            if (vs.length && vs[0].autonomyKm) {
+              setVehicleAutonomy(vs[0].autonomyKm);
+            } else {
+              setVehicleAutonomy(0);
+            }
+            setVehicleLoaded(true);
+          }
+        } catch (e) {
+          console.warn('[planner] vehicle load', e);
+          if (!cancelled) setVehicleLoaded(true);
+        }
+      })();
+      return () => {
+        cancelled = true;
+      };
+    }, [])
+  );
 
   async function useMyLocation() {
-    try {
-      const { status } = await Location.requestForegroundPermissionsAsync();
-      if (status !== 'granted') return setError('Permission refusée');
-      const pos = await Location.getCurrentPositionAsync({
-        accuracy: Location.Accuracy.Balanced,
-      });
-      const p: Point = {
-        latitude: pos.coords.latitude,
-        longitude: pos.coords.longitude,
-        label: '📍 Ma position',
-      };
-      setStart(p);
-      setStartQuery('📍 Ma position');
-      setStartSugg([]);
-    } catch {
-      setError('Position introuvable');
-    }
+    const { status } = await Location.requestForegroundPermissionsAsync();
+    if (status !== 'granted') return Alert.alert('Permission refusée');
+    const pos = await Location.getCurrentPositionAsync({});
+    const p = {
+      latitude: pos.coords.latitude,
+      longitude: pos.coords.longitude,
+      label: '📍 Ma position',
+    };
+    setStart(p);
+    setStartQuery(p.label);
   }
 
-  function pick(s: GeocodingResult, which: 'start' | 'end') {
-    const p: Point = {
-      latitude: s.latitude,
-      longitude: s.longitude,
-      label: s.displayName,
+  async function pick(which: 'start' | 'end') {
+    const q = which === 'start' ? startQuery : endQuery;
+    if (q.trim().length < 3) return;
+    const results = await geocode(q);
+    if (!results.length) return Alert.alert('Aucun résultat');
+    const r = results[0];
+    const p = {
+      latitude: r.latitude,
+      longitude: r.longitude,
+      label: r.displayName,
     };
     if (which === 'start') {
       setStart(p);
-      setStartQuery(s.displayName);
-      setStartSugg([]);
+      setStartQuery(r.displayName.split(',').slice(0, 2).join(', '));
     } else {
       setEnd(p);
-      setEndQuery(s.displayName);
-      setEndSugg([]);
+      setEndQuery(r.displayName.split(',').slice(0, 2).join(', '));
     }
   }
 
   async function calculate() {
-    if (!start || !end) return setError('Choisis un départ et une arrivée');
-    setError(null);
-    setRoute(null);
-    setRouteStations([]);
-    setSavedTripId(null);
-    setLoading(true);
-
-    try {
-      // 1. Calcul de l'itinéraire (OSRM)
-      setLoadingMsg('Calcul de l’itinéraire…');
-      const result = await getRoute(start, end);
-      if (!result) {
-        setError('Aucun itinéraire trouvé');
-        return;
-      }
-      setRoute(result);
-
-      // 2. Recherche des bornes le long du trajet (OCM)
-      setLoadingMsg('Recherche des bornes le long du trajet…');
-      const stations = await fetchStationsAlongRoute(result.coordinates, 15, 40);
-      setRouteStations(stations);
-
-      // 3. Persiste le trajet en BDD
-      setLoadingMsg('Sauvegarde du trajet…');
-      const stopsCalc = computeChargingStops(
-        result.distanceMeters / 1000,
-        vehicle
+    if (!start || !end) return Alert.alert('Choisis un départ et une arrivée');
+    if (vehicleAutonomy <= 0) {
+      return Alert.alert(
+        'Véhicule non configuré',
+        'Configure ton véhicule dans le Profil pour calculer l\'autonomie.',
+        [
+          { text: 'Annuler', style: 'cancel' },
+          {
+            text: 'Aller au profil',
+            onPress: () => router.push('/(tabs)/profile'),
+          },
+        ]
       );
-
-      try {
-        const trip = await tripsApi.create({
-          startLabel: start.label,
-          startLat: start.latitude,
-          startLon: start.longitude,
-          endLabel: end.label,
-          endLat: end.latitude,
-          endLon: end.longitude,
-          distanceKm: result.distanceMeters / 1000,
-          durationS: result.durationSeconds,
-          stopsNeeded: stopsCalc.stopsNeeded,
-          stations: stations.slice(0, 50).map((s, idx) => ({
-            ocmStationId: s.id,
-            stationName: s.name,
-            latitude: s.latitude,
-            longitude: s.longitude,
-            powerKw: s.powerKW,
-            distanceFromStartKm: s.distanceFromStartKm,
-            orderIndex: idx,
-          })),
-        });
-        setSavedTripId(trip.id);
-        console.log('[VoltWay] Trajet sauvegardé en BDD id=', trip.id);
-      } catch (saveErr) {
-        console.warn('[VoltWay] Sauvegarde trajet échouée:', saveErr);
-      }
+    }
+    setLoading(true);
+    setAccepted(false);
+    try {
+      const r = await getRoute(start, end);
+      if (!r) return Alert.alert('Aucun itinéraire');
+      setRoute(r);
     } catch (e: any) {
-      setError(e?.message ?? 'Erreur');
+      Alert.alert('Erreur', e.message);
     } finally {
       setLoading(false);
-      setLoadingMsg('');
     }
   }
 
-  function reset() {
-    setStart(null);
-    setEnd(null);
-    setStartQuery('');
-    setEndQuery('');
-    setStartSugg([]);
-    setEndSugg([]);
-    setRoute(null);
-    setRouteStations([]);
-    setError(null);
-    setSavedTripId(null);
+  async function acceptTrip() {
+    if (!start || !end || !route) return;
+    setSaving(true);
+    try {
+      const distanceKm = route.distanceMeters / 1000;
+      const stopsNeeded = Math.max(0, Math.ceil(distanceKm / 280) - 1);
+
+      await tripsApi.create({
+        startLabel: start.label,
+        startLat: start.latitude,
+        startLon: start.longitude,
+        endLabel: end.label,
+        endLat: end.latitude,
+        endLon: end.longitude,
+        distanceKm,
+        durationS: route.durationSeconds,
+        stopsNeeded,
+        stations: [],
+      });
+
+      const remaining = Math.max(0, vehicleAutonomy - distanceKm);
+      setAccepted(true);
+      Alert.alert(
+        '✅ Trajet accepté !',
+        `Il te restera environ ${remaining.toFixed(0)} km d'autonomie.\n\nTon trajet a été ajouté à ton profil.`,
+        [
+          { text: 'Rester ici', style: 'cancel' },
+          {
+            text: 'Voir le profil',
+            onPress: () => router.push('/(tabs)/profile'),
+          },
+        ]
+      );
+    } catch (e: any) {
+      Alert.alert('Erreur', e.message);
+    } finally {
+      setSaving(false);
+    }
   }
 
-  const stops = route
-    ? computeChargingStops(route.distanceMeters / 1000, vehicle)
-    : null;
+  const auroraX = auroraShift.interpolate({
+    inputRange: [0, 1],
+    outputRange: [-width * 0.2, width * 0.2],
+  });
+  const auroraXNeg = auroraShift.interpolate({
+    inputRange: [0, 1],
+    outputRange: [width * 0.2, -width * 0.2],
+  });
+  const shimmerX = shimmer.interpolate({
+    inputRange: [0, 1],
+    outputRange: [-250, 400],
+  });
 
-  // 🎨 Rendu d'une suggestion (titre + sous-titre)
-  function renderSuggestion(s: GeocodingResult, idx: number, which: 'start' | 'end') {
-    const parts = s.displayName.split(', ');
-    const title = parts.slice(0, 2).join(', ');
-    const subtitle = parts.slice(2).join(', ');
+  // === Calculs d'autonomie basés sur le PROFIL ===
+  const tripKm = route ? route.distanceMeters / 1000 : 0;
+  const remainingAfter = vehicleAutonomy - tripKm;
+  const remainingPercent =
+    vehicleAutonomy > 0
+      ? Math.max(0, Math.min(100, (remainingAfter / vehicleAutonomy) * 100))
+      : 0;
+  const canComplete = remainingAfter >= 0;
+  const willBeTight = remainingAfter >= 0 && remainingAfter < 15;
+
+  const autonomyColor = !canComplete
+    ? '#ef4444'
+    : willBeTight
+    ? '#f59e0b'
+    : '#22c55e';
+  const autonomyGradient: [string, string] = !canComplete
+    ? ['#ef4444', '#b91c1c']
+    : willBeTight
+    ? ['#f59e0b', '#d97706']
+    : ['#22c55e', '#16a34a'];
+
+  function renderWebRoute(startPt: Point, endPt: Point, r: Route) {
+    const coords = r.coordinates;
+    const lats = coords.map((c) => c.latitude);
+    const lons = coords.map((c) => c.longitude);
+    const minLat = Math.min(...lats);
+    const maxLat = Math.max(...lats);
+    const minLon = Math.min(...lons);
+    const maxLon = Math.max(...lons);
+    const latRange = maxLat - minLat || 1;
+    const lonRange = maxLon - minLon || 1;
+    const padding = 0.1;
+    const norm = (v: number, min: number, range: number) =>
+      ((v - min) / range) * (1 - 2 * padding) + padding;
 
     return (
-      <Pressable
-        key={`${which}-${idx}`}
-        style={styles.sugg}
-        onPress={() => pick(s, which)}
-      >
-        <Text style={styles.suggTitle} numberOfLines={1}>
-          📍 {title}
-        </Text>
-        {subtitle ? (
-          <Text style={styles.suggSub} numberOfLines={1}>
-            {subtitle}
+      <View style={StyleSheet.absoluteFill}>
+        <LinearGradient
+          colors={['#0a1e14', '#050a08']}
+          style={StyleSheet.absoluteFill}
+        />
+        {[...Array(6)].map((_, i) => (
+          <View
+            key={`h${i}`}
+            style={[
+              styles.gridLine,
+              { top: `${(i + 1) * 14}%`, left: 0, right: 0, height: 1 },
+            ]}
+          />
+        ))}
+        {[...Array(5)].map((_, i) => (
+          <View
+            key={`v${i}`}
+            style={[
+              styles.gridLine,
+              { left: `${(i + 1) * 17}%`, top: 0, bottom: 0, width: 1 },
+            ]}
+          />
+        ))}
+        {coords.slice(0, -1).map((c, i) => {
+          const next = coords[i + 1];
+          const x1 = norm(c.longitude, minLon, lonRange) * 100;
+          const y1 = (1 - norm(c.latitude, minLat, latRange)) * 100;
+          const x2 = norm(next.longitude, minLon, lonRange) * 100;
+          const y2 = (1 - norm(next.latitude, minLat, latRange)) * 100;
+          const dx = x2 - x1;
+          const dy = y2 - y1;
+          const length = Math.sqrt(dx * dx + dy * dy);
+          const angle = Math.atan2(dy, dx) * (180 / Math.PI);
+          if (i % 8 !== 0) return null;
+          return (
+            <View
+              key={i}
+              style={[
+                styles.routeLine,
+                {
+                  left: `${x1}%`,
+                  top: `${y1}%`,
+                  width: `${length}%`,
+                  transform: [{ rotate: `${angle}deg` }],
+                },
+              ]}
+            />
+          );
+        })}
+        <View
+          style={[
+            styles.point,
+            styles.pointStart,
+            {
+              left: `${norm(startPt.longitude, minLon, lonRange) * 100}%`,
+              top: `${(1 - norm(startPt.latitude, minLat, latRange)) * 100}%`,
+            },
+          ]}
+        >
+          <View style={styles.pointInner} />
+        </View>
+        <View
+          style={[
+            styles.point,
+            styles.pointEnd,
+            {
+              left: `${norm(endPt.longitude, minLon, lonRange) * 100}%`,
+              top: `${(1 - norm(endPt.latitude, minLat, latRange)) * 100}%`,
+            },
+          ]}
+        >
+          <View style={styles.pointInner} />
+        </View>
+        <View style={styles.webMapBadge}>
+          <Text style={styles.webMapBadgeText}>
+            🗺️ Itinéraire · Carte interactive sur mobile
           </Text>
-        ) : null}
-      </Pressable>
+        </View>
+      </View>
     );
   }
 
   return (
-    <SafeAreaView style={styles.container} edges={['top']}>
-      <KeyboardAvoidingView
-        style={{ flex: 1 }}
-        behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+    <View style={styles.root}>
+      <Animated.View
+        style={[styles.auroraLayer, { transform: [{ translateX: auroraX }] }]}
       >
+        <LinearGradient
+          colors={['#052e16', '#0d2818', '#050a08']}
+          start={{ x: 0, y: 0 }}
+          end={{ x: 1, y: 1 }}
+          style={styles.fill}
+        />
+      </Animated.View>
+
+      <Animated.View
+        style={[
+          styles.auroraBlob,
+          styles.blob1,
+          { transform: [{ translateX: auroraX }] },
+        ]}
+      >
+        <LinearGradient colors={['#166534', 'transparent']} style={styles.fill} />
+      </Animated.View>
+
+      <Animated.View
+        style={[
+          styles.auroraBlob,
+          styles.blob2,
+          { transform: [{ translateX: auroraXNeg }] },
+        ]}
+      >
+        <LinearGradient colors={['#14532d', 'transparent']} style={styles.fill} />
+      </Animated.View>
+
+      <SafeAreaView style={styles.safe} edges={['top']}>
         <ScrollView
-          contentContainerStyle={styles.scroll}
-          keyboardShouldPersistTaps="handled"
+          contentContainerStyle={styles.scrollContent}
+          showsVerticalScrollIndicator={false}
         >
-          <Text style={styles.title}>🗺️ Planifier</Text>
-          <Text style={styles.subtitle}>
-            {vehicle.modelName} · {vehicle.autonomyKm} km
-          </Text>
-
-          {/* Départ */}
-          <Text style={styles.label}>Départ</Text>
-          <View style={styles.row}>
-            <TextInput
-              style={styles.input}
-              placeholder="Adresse de départ"
-              value={startQuery}
-              onChangeText={(t) => {
-                setStartQuery(t);
-                setStart(null);
-                search(t, 'start');
-              }}
-            />
-            <Pressable style={styles.locBtn} onPress={useMyLocation}>
-              <Text style={{ fontSize: 20 }}>📍</Text>
-            </Pressable>
+          <View style={styles.header}>
+            <Text style={styles.title}>🗺️ Planifier</Text>
+            <Text style={styles.subtitle}>
+              {vehicleLoaded && vehicleAutonomy > 0
+                ? `Autonomie du véhicule : ${vehicleAutonomy} km (depuis Profil)`
+                : vehicleLoaded
+                ? 'Aucun véhicule configuré — va dans Profil'
+                : 'Chargement…'}
+            </Text>
           </View>
-          {startSearching && (
-            <View style={styles.searchingRow}>
-              <ActivityIndicator color="#22c55e" size="small" />
-              <Text style={styles.searchingText}>Recherche…</Text>
-            </View>
-          )}
-          {startSugg.length > 0 && (
-            <View style={styles.suggestionsBox}>
-              {startSugg.map((s, i) => renderSuggestion(s, i, 'start'))}
-            </View>
-          )}
 
-          {/* Arrivée */}
-          <Text style={styles.label}>Arrivée</Text>
-          <TextInput
-            style={styles.input}
-            placeholder="Adresse d'arrivée"
-            value={endQuery}
-            onChangeText={(t) => {
-              setEndQuery(t);
-              setEnd(null);
-              search(t, 'end');
-            }}
-          />
-          {endSearching && (
-            <View style={styles.searchingRow}>
-              <ActivityIndicator color="#22c55e" size="small" />
-              <Text style={styles.searchingText}>Recherche…</Text>
-            </View>
-          )}
-          {endSugg.length > 0 && (
-            <View style={styles.suggestionsBox}>
-              {endSugg.map((s, i) => renderSuggestion(s, i, 'end'))}
-            </View>
-          )}
-
-          <View style={styles.actions}>
-            <Pressable style={styles.resetBtn} onPress={reset}>
-              <Text style={styles.resetText}>Réinitialiser</Text>
-            </Pressable>
+          {/* Avertissement si pas de véhicule */}
+          {vehicleLoaded && vehicleAutonomy === 0 && (
             <Pressable
-              style={[
-                styles.calcBtn,
-                (!start || !end || loading) && styles.calcBtnDisabled,
-              ]}
-              onPress={calculate}
-              disabled={!start || !end || loading}
+              style={styles.warningCard}
+              onPress={() => router.push('/(tabs)/profile')}
             >
-              {loading ? (
-                <ActivityIndicator color="#fff" />
-              ) : (
-                <Text style={styles.calcText}>Calculer</Text>
-              )}
+              <Text style={styles.warningEmoji}>⚠️</Text>
+              <View style={{ flex: 1 }}>
+                <Text style={styles.warningTitle}>
+                  Configure ton véhicule
+                </Text>
+                <Text style={styles.warningText}>
+                  Va dans Profil pour renseigner l'autonomie de ta voiture.
+                </Text>
+              </View>
+              <Text style={styles.warningArrow}>→</Text>
             </Pressable>
+          )}
+
+          <View style={styles.card}>
+            <Text style={styles.label}>Départ</Text>
+            <View style={styles.row}>
+              <TextInput
+                style={[
+                  styles.input,
+                  focused === 'start' && styles.inputFocused,
+                ]}
+                value={startQuery}
+                onChangeText={setStartQuery}
+                onBlur={() => pick('start')}
+                onFocus={() => setFocused('start')}
+                placeholder="Adresse de départ"
+                placeholderTextColor="#475569"
+              />
+              <Pressable style={styles.locBtn} onPress={useMyLocation}>
+                <Text style={{ fontSize: 18 }}>📍</Text>
+              </Pressable>
+            </View>
+
+            <Text style={styles.label}>Arrivée</Text>
+            <TextInput
+              style={[styles.input, focused === 'end' && styles.inputFocused]}
+              value={endQuery}
+              onChangeText={setEndQuery}
+              onBlur={() => pick('end')}
+              onFocus={() => setFocused('end')}
+              placeholder="Adresse d'arrivée"
+              placeholderTextColor="#475569"
+            />
           </View>
 
-          {loading && loadingMsg ? (
-            <Text style={styles.loadingMsg}>{loadingMsg}</Text>
-          ) : null}
-          {error ? <Text style={styles.error}>{error}</Text> : null}
-
-          {/* Carte du trajet avec les bornes */}
-          {route && start && end && (
-            <View style={styles.mapWrap}>
-              <MapView
-                style={styles.map}
-                initialRegion={{
-                  latitude: (start.latitude + end.latitude) / 2,
-                  longitude: (start.longitude + end.longitude) / 2,
-                  latitudeDelta:
-                    Math.abs(start.latitude - end.latitude) * 1.6 + 0.1,
-                  longitudeDelta:
-                    Math.abs(start.longitude - end.longitude) * 1.6 + 0.1,
-                }}
+          <View style={styles.calcBtnWrapper}>
+            <View style={styles.calcBtn}>
+              <LinearGradient
+                colors={['#22c55e', '#16a34a']}
+                start={{ x: 0, y: 0 }}
+                end={{ x: 1, y: 0 }}
+                style={styles.fill}
+              />
+              <Animated.View
+                style={[
+                  styles.shimmerBar,
+                  { transform: [{ translateX: shimmerX }] },
+                ]}
               >
-                <Polyline
-                  coordinates={route.coordinates}
-                  strokeColor="#22c55e"
-                  strokeWidth={4}
+                <LinearGradient
+                  colors={[
+                    'transparent',
+                    'rgba(255,255,255,0.4)',
+                    'transparent',
+                  ]}
+                  start={{ x: 0, y: 0 }}
+                  end={{ x: 1, y: 0 }}
+                  style={styles.fill}
                 />
-                <Marker coordinate={start} title="Départ" pinColor="#22c55e" />
-                <Marker coordinate={end} title="Arrivée" pinColor="#ef4444" />
-                {routeStations.map((s) => (
-                  <Marker
-                    key={s.id}
-                    coordinate={{ latitude: s.latitude, longitude: s.longitude }}
-                    title={s.name}
-                    description={
-                      s.powerKW
-                        ? `${s.powerKW} kW · ${s.connectors?.join(', ') ?? ''}`
-                        : 'Borne'
-                    }
-                    pinColor="#2563eb"
-                  />
-                ))}
-              </MapView>
+              </Animated.View>
+              <Pressable
+                onPress={calculate}
+                disabled={loading}
+                style={styles.calcBtnInner}
+              >
+                {loading ? (
+                  <ActivityIndicator color="#050a08" />
+                ) : (
+                  <Text style={styles.calcText}>⚡ Calculer l'itinéraire</Text>
+                )}
+              </Pressable>
             </View>
-          )}
+          </View>
 
-          {/* Résumé */}
-          {route && stops && (
-            <View style={styles.result}>
-              <Text style={styles.resultTitle}>📊 Résumé</Text>
-              <Row
-                label="Distance"
-                value={`${(route.distanceMeters / 1000).toFixed(1)} km`}
-              />
-              <Row
-                label="Durée conduite"
-                value={`${Math.floor(route.durationSeconds / 3600)}h${String(
-                  Math.floor((route.durationSeconds % 3600) / 60)
-                ).padStart(2, '0')}`}
-              />
-              <View style={styles.divider} />
-              <Row
-                label="Bornes sur le trajet"
-                value={`${routeStations.length}`}
-              />
-              <Row label="Arrêts recommandés" value={`${stops.stopsNeeded}`} />
-              <Row label="Temps recharge" value={`${stops.chargeTimeMin} min`} />
-              {savedTripId !== null && (
-                <Text style={styles.savedBadge}>
-                  💾 Trajet sauvegardé en BDD (id #{savedTripId})
-                </Text>
-              )}
-            </View>
-          )}
+          {route && start && end && (
+            <>
+              <View style={styles.mapWrap}>
+                {MapView ? (
+                  <MapView
+                    style={{ flex: 1 }}
+                    initialRegion={{
+                      latitude: (start.latitude + end.latitude) / 2,
+                      longitude: (start.longitude + end.longitude) / 2,
+                      latitudeDelta:
+                        Math.abs(start.latitude - end.latitude) * 1.6 + 0.1,
+                      longitudeDelta:
+                        Math.abs(start.longitude - end.longitude) * 1.6 + 0.1,
+                    }}
+                  >
+                    <Polyline
+                      coordinates={route.coordinates}
+                      strokeColor="#22c55e"
+                      strokeWidth={4}
+                    />
+                    <Marker coordinate={start} title="Départ" pinColor="green" />
+                    <Marker coordinate={end} title="Arrivée" pinColor="red" />
+                  </MapView>
+                ) : (
+                  renderWebRoute(start, end, route)
+                )}
+              </View>
 
-          {/* Liste des bornes du trajet */}
-          {routeStations.length > 0 && (
-            <View style={styles.stationsBlock}>
-              <Text style={styles.resultTitle}>
-                🔌 Bornes le long du trajet ({routeStations.length})
-              </Text>
-              {routeStations.map((s, idx) => (
-                <View key={s.id} style={styles.stationCard}>
-                  <Text style={styles.stationIdx}>#{idx + 1}</Text>
-                  <View style={{ flex: 1 }}>
-                    <Text style={styles.stationName} numberOfLines={2}>
-                      {s.name}
-                    </Text>
-                    <Text style={styles.stationInfo}>
-                      {s.powerKW ? `${s.powerKW} kW` : 'Puissance inconnue'}
-                      {s.connectors?.length
-                        ? ` · ${s.connectors.join(', ')}`
-                        : ''}
-                    </Text>
-                    <Text style={styles.stationDist}>
-                      📍 à {s.distanceFromStartKm.toFixed(0)} km du départ
+              <View style={styles.resultCard}>
+                <View style={styles.resultRow}>
+                  <Text style={styles.resultLabel}>Distance</Text>
+                  <Text style={styles.resultValue}>
+                    {(route.distanceMeters / 1000).toFixed(1)} km
+                  </Text>
+                </View>
+                <View style={styles.divider} />
+                <View style={styles.resultRow}>
+                  <Text style={styles.resultLabel}>Durée estimée</Text>
+                  <Text style={styles.resultValue}>
+                    {Math.floor(route.durationSeconds / 60)} min
+                  </Text>
+                </View>
+                <View style={styles.divider} />
+                <View style={styles.resultRow}>
+                  <Text style={styles.resultLabel}>Arrêts recommandés</Text>
+                  <Text style={styles.resultValue}>
+                    {Math.max(0, Math.ceil(route.distanceMeters / 1000 / 280) - 1)}
+                  </Text>
+                </View>
+              </View>
+
+              {/* ===== AUTONOMIE RESTANTE (basée sur Profil) ===== */}
+              <View style={styles.autonomyCard}>
+                <LinearGradient
+                  colors={autonomyGradient}
+                  start={{ x: 0, y: 0 }}
+                  end={{ x: 1, y: 1 }}
+                  style={styles.autonomyHeaderGradient}
+                >
+                  <Text style={styles.autonomyHeaderEmoji}>
+                    {canComplete ? (willBeTight ? '⚠️' : '🔋') : '❌'}
+                  </Text>
+                  <Text style={styles.autonomyHeaderText}>
+                    {!canComplete
+                      ? 'Recharge nécessaire'
+                      : willBeTight
+                      ? 'Autonomie juste'
+                      : 'Trajet réalisable'}
+                  </Text>
+                </LinearGradient>
+
+                <View style={styles.autonomyBody}>
+                  <View style={styles.autonomyStats}>
+                    <View style={styles.autonomyStatItem}>
+                      <Text style={styles.autonomyStatLabel}>
+                        Autonomie véhicule
+                      </Text>
+                      <Text style={styles.autonomyStatValue}>
+                        {vehicleAutonomy} km
+                      </Text>
+                    </View>
+                    <View style={styles.autonomyStatDivider} />
+                    <View style={styles.autonomyStatItem}>
+                      <Text style={styles.autonomyStatLabel}>Consommé</Text>
+                      <Text
+                        style={[styles.autonomyStatValue, { color: '#f87171' }]}
+                      >
+                        −{tripKm.toFixed(0)} km
+                      </Text>
+                    </View>
+                  </View>
+
+                  <View style={styles.autonomyMainBlock}>
+                    <Text style={styles.autonomyMainLabel}>Il te restera</Text>
+                    <Text
+                      style={[
+                        styles.autonomyMainValue,
+                        { color: autonomyColor },
+                      ]}
+                    >
+                      {Math.max(0, remainingAfter).toFixed(0)} km
                     </Text>
                   </View>
-                </View>
-              ))}
-            </View>
-          )}
-        </ScrollView>
-      </KeyboardAvoidingView>
-    </SafeAreaView>
-  );
-}
 
-function Row({ label, value }: { label: string; value: string }) {
-  return (
-    <View style={styles.resultRow}>
-      <Text style={styles.resultLabel}>{label}</Text>
-      <Text style={styles.resultValue}>{value}</Text>
+                  <View style={styles.autonomyBarBg}>
+                    <View
+                      style={[
+                        styles.autonomyBarFill,
+                        {
+                          width: `${remainingPercent}%`,
+                          backgroundColor: autonomyColor,
+                        },
+                      ]}
+                    />
+                  </View>
+
+                  <Text style={styles.autonomyHint}>
+                    {!canComplete
+                      ? `Prévois une recharge sur le chemin (${Math.ceil(
+                          Math.abs(remainingAfter)
+                        )} km manquants)`
+                      : `≈ ${remainingPercent.toFixed(
+                          0
+                        )}% de batterie restante`}
+                  </Text>
+                </View>
+              </View>
+
+              {!accepted ? (
+                <View style={styles.acceptBtnWrapper}>
+                  <View style={styles.acceptBtn}>
+                    <LinearGradient
+                      colors={['#22c55e', '#16a34a']}
+                      start={{ x: 0, y: 0 }}
+                      end={{ x: 1, y: 0 }}
+                      style={styles.fill}
+                    />
+                    <Pressable
+                      onPress={acceptTrip}
+                      disabled={saving}
+                      style={styles.acceptBtnInner}
+                    >
+                      {saving ? (
+                        <ActivityIndicator color="#050a08" />
+                      ) : (
+                        <Text style={styles.acceptText}>
+                          ✓ Accepter ce voyage
+                        </Text>
+                      )}
+                    </Pressable>
+                  </View>
+                </View>
+              ) : (
+                <View style={styles.acceptedCard}>
+                  <Text style={styles.acceptedTitle}>
+                    ✅ Trajet ajouté à ton profil
+                  </Text>
+                  <Pressable
+                    onPress={() => router.push('/(tabs)/profile')}
+                    style={styles.seeProfileBtn}
+                  >
+                    <Text style={styles.seeProfileText}>Voir le profil →</Text>
+                  </Pressable>
+                </View>
+              )}
+            </>
+          )}
+
+          <Text style={styles.footer}>v2.0 · Électrise ta route ⚡</Text>
+        </ScrollView>
+      </SafeAreaView>
     </View>
   );
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: '#eff6ff' },
-  scroll: { padding: 20, paddingBottom: 60 },
-  title: { fontSize: 28, fontWeight: 'bold', color: '#2563eb', marginBottom: 4 },
-  subtitle: { fontSize: 14, color: '#1e40af', marginBottom: 16 },
-  label: {
+  root: { flex: 1, backgroundColor: '#050a08' },
+  safe: { flex: 1 },
+  scrollContent: { paddingHorizontal: 20, paddingBottom: 40 },
+  fill: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+  },
+  auroraLayer: {
+    position: 'absolute',
+    top: -100,
+    left: -100,
+    width: width * 1.5,
+    height: height * 1.5,
+  },
+  auroraBlob: {
+    position: 'absolute',
+    width: width * 0.9,
+    height: width * 0.9,
+    borderRadius: width * 0.45,
+    overflow: 'hidden',
+  },
+  blob1: { top: -100, left: -150 },
+  blob2: { bottom: -150, right: -150 },
+
+  header: { paddingTop: 12, paddingBottom: 20 },
+  title: {
+    fontSize: 32,
+    fontWeight: '800',
+    color: '#f0fdf4',
+    letterSpacing: -0.8,
+  },
+  subtitle: {
     fontSize: 13,
+    color: '#86efac',
+    marginTop: 4,
+    letterSpacing: 0.3,
+    opacity: 0.85,
+  },
+
+  warningCard: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    backgroundColor: 'rgba(245,158,11,0.12)',
+    borderWidth: 1,
+    borderColor: 'rgba(245,158,11,0.4)',
+    borderRadius: 14,
+    padding: 14,
+    marginBottom: 12,
+  },
+  warningEmoji: { fontSize: 22 },
+  warningTitle: {
+    color: '#fbbf24',
+    fontSize: 13,
+    fontWeight: '800',
+    marginBottom: 2,
+  },
+  warningText: {
+    color: '#94a3b8',
+    fontSize: 11,
+    lineHeight: 15,
+  },
+  warningArrow: {
+    color: '#fbbf24',
+    fontSize: 20,
+    fontWeight: '800',
+  },
+
+  card: {
+    backgroundColor: 'rgba(15,23,20,0.85)',
+    borderRadius: 18,
+    padding: 16,
+    marginBottom: 12,
+    borderWidth: 1,
+    borderColor: 'rgba(34,197,94,0.2)',
+  },
+  label: {
+    fontSize: 11,
     fontWeight: '700',
-    color: '#334155',
-    marginTop: 12,
+    color: '#86efac',
     marginBottom: 6,
+    marginTop: 8,
+    letterSpacing: 1.2,
+    textTransform: 'uppercase',
   },
   row: { flexDirection: 'row', gap: 8 },
   input: {
     flex: 1,
-    backgroundColor: '#ffffff',
-    borderRadius: 10,
+    backgroundColor: '#0a1410',
+    borderRadius: 12,
     paddingHorizontal: 14,
-    paddingVertical: 12,
-    fontSize: 14,
+    paddingVertical: 13,
+    fontSize: 15,
+    color: '#f0fdf4',
     borderWidth: 1,
-    borderColor: '#cbd5e1',
+    borderColor: '#1e293b',
   },
+  inputFocused: { borderColor: '#22c55e' },
   locBtn: {
-    backgroundColor: '#ffffff',
+    backgroundColor: '#0a1410',
     width: 48,
-    borderRadius: 10,
+    borderRadius: 12,
     justifyContent: 'center',
     alignItems: 'center',
     borderWidth: 1,
-    borderColor: '#cbd5e1',
+    borderColor: '#1e293b',
   },
-  searchingRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    marginTop: 6,
-    paddingLeft: 4,
-  },
-  searchingText: { marginLeft: 8, fontSize: 12, color: '#2563eb' },
-  suggestionsBox: {
-    backgroundColor: '#fff',
-    borderRadius: 10,
-    marginTop: 6,
-    borderWidth: 1,
-    borderColor: '#e2e8f0',
-    overflow: 'hidden',
-  },
-  sugg: {
-    paddingHorizontal: 14,
-    paddingVertical: 10,
-    borderBottomWidth: 1,
-    borderBottomColor: '#f1f5f9',
-  },
-  suggTitle: { fontSize: 14, fontWeight: '700', color: '#0f172a' },
-  suggSub: { fontSize: 11, color: '#64748b', marginTop: 2 },
-  actions: { flexDirection: 'row', gap: 10, marginTop: 20 },
-  resetBtn: {
-    flex: 1,
-    paddingVertical: 14,
-    borderRadius: 10,
-    backgroundColor: '#e2e8f0',
-    alignItems: 'center',
-  },
-  resetText: { color: '#475569', fontWeight: '700' },
-  calcBtn: {
-    flex: 2,
-    paddingVertical: 14,
-    borderRadius: 10,
-    backgroundColor: '#22c55e',
-    alignItems: 'center',
-  },
-  calcBtnDisabled: { backgroundColor: '#94a3b8' },
-  calcText: { color: '#fff', fontWeight: '700' },
-  loadingMsg: { marginTop: 12, color: '#2563eb', textAlign: 'center' },
-  error: { marginTop: 12, color: '#ef4444', textAlign: 'center' },
-  mapWrap: { marginTop: 20, height: 280, borderRadius: 12, overflow: 'hidden' },
-  map: { flex: 1 },
-  result: {
-    marginTop: 20,
-    backgroundColor: '#fff',
-    padding: 16,
-    borderRadius: 12,
-    borderWidth: 1,
-    borderColor: '#e2e8f0',
-  },
-  resultTitle: {
-    fontSize: 16,
-    fontWeight: '700',
-    color: '#0f172a',
+
+  calcBtnWrapper: {
     marginBottom: 12,
+    borderRadius: 14,
+    overflow: 'hidden',
+    shadowColor: '#22c55e',
+    shadowOpacity: 0.4,
+    shadowRadius: 14,
+    shadowOffset: { width: 0, height: 4 },
+    elevation: 8,
+  },
+  calcBtn: { overflow: 'hidden' },
+  calcBtnInner: {
+    paddingVertical: 16,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  shimmerBar: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    width: 150,
+    height: '100%',
+  },
+  calcText: {
+    color: '#050a08',
+    fontSize: 15,
+    fontWeight: '800',
+    letterSpacing: 0.4,
+  },
+
+  mapWrap: {
+    height: 280,
+    borderRadius: 18,
+    overflow: 'hidden',
+    marginBottom: 12,
+    borderWidth: 1,
+    borderColor: 'rgba(34,197,94,0.2)',
+  },
+
+  resultCard: {
+    backgroundColor: 'rgba(15,23,20,0.85)',
+    borderRadius: 18,
+    padding: 16,
+    marginBottom: 12,
+    borderWidth: 1,
+    borderColor: 'rgba(34,197,94,0.2)',
   },
   resultRow: {
     flexDirection: 'row',
     justifyContent: 'space-between',
-    paddingVertical: 6,
+    alignItems: 'center',
+    paddingVertical: 4,
   },
-  resultLabel: { fontSize: 13, color: '#64748b' },
-  resultValue: { fontSize: 14, fontWeight: '700', color: '#0f172a' },
-  divider: { height: 1, backgroundColor: '#e2e8f0', marginVertical: 8 },
-  savedBadge: {
-    marginTop: 12,
-    paddingTop: 10,
-    borderTopWidth: 1,
-    borderTopColor: '#e2e8f0',
-    fontSize: 12,
-    fontWeight: '600',
-    color: '#16a34a',
-    textAlign: 'center',
-  },
-  stationsBlock: {
-    marginTop: 20,
-    backgroundColor: '#fff',
-    padding: 16,
-    borderRadius: 12,
-    borderWidth: 1,
-    borderColor: '#e2e8f0',
-  },
-  stationCard: {
-    flexDirection: 'row',
-    paddingVertical: 10,
-    borderTopWidth: 1,
-    borderTopColor: '#f1f5f9',
-    gap: 10,
-  },
-  stationIdx: {
+  resultLabel: { fontSize: 13, color: '#94a3b8' },
+  resultValue: {
+    fontSize: 15,
     fontWeight: '800',
+    color: '#f0fdf4',
+  },
+  divider: {
+    height: 1,
+    backgroundColor: 'rgba(34,197,94,0.15)',
+    marginVertical: 6,
+  },
+
+  autonomyCard: {
+    borderRadius: 18,
+    overflow: 'hidden',
+    marginBottom: 12,
+    borderWidth: 1,
+    borderColor: 'rgba(34,197,94,0.25)',
+    backgroundColor: 'rgba(15,23,20,0.95)',
+  },
+  autonomyHeaderGradient: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+    paddingVertical: 12,
+  },
+  autonomyHeaderEmoji: { fontSize: 18 },
+  autonomyHeaderText: {
+    color: '#050a08',
+    fontSize: 13,
+    fontWeight: '800',
+    letterSpacing: 0.8,
+    textTransform: 'uppercase',
+  },
+  autonomyBody: { padding: 18 },
+  autonomyStats: {
+    flexDirection: 'row',
+    marginBottom: 16,
+  },
+  autonomyStatItem: { flex: 1, alignItems: 'center' },
+  autonomyStatDivider: {
+    width: 1,
+    backgroundColor: 'rgba(34,197,94,0.2)',
+    marginVertical: 4,
+  },
+  autonomyStatLabel: {
+    fontSize: 10,
+    color: '#94a3b8',
+    fontWeight: '700',
+    letterSpacing: 0.8,
+    textTransform: 'uppercase',
+    marginBottom: 4,
+  },
+  autonomyStatValue: {
+    fontSize: 16,
+    fontWeight: '800',
+    color: '#f0fdf4',
+  },
+  autonomyMainBlock: {
+    alignItems: 'center',
+    paddingVertical: 8,
+  },
+  autonomyMainLabel: {
+    fontSize: 11,
+    color: '#86efac',
+    fontWeight: '700',
+    letterSpacing: 1.5,
+    textTransform: 'uppercase',
+    marginBottom: 4,
+  },
+  autonomyMainValue: {
+    fontSize: 42,
+    fontWeight: '800',
+    letterSpacing: -1.2,
+  },
+  autonomyBarBg: {
+    height: 10,
+    backgroundColor: 'rgba(34,197,94,0.1)',
+    borderRadius: 5,
+    overflow: 'hidden',
+    marginTop: 8,
+  },
+  autonomyBarFill: {
+    height: '100%',
+    borderRadius: 5,
+  },
+  autonomyHint: {
+    textAlign: 'center',
+    fontSize: 12,
+    color: '#64748b',
+    marginTop: 12,
+    fontStyle: 'italic',
+  },
+
+  acceptBtnWrapper: {
+    borderRadius: 14,
+    overflow: 'hidden',
+    marginBottom: 12,
+    shadowColor: '#22c55e',
+    shadowOpacity: 0.5,
+    shadowRadius: 18,
+    shadowOffset: { width: 0, height: 6 },
+    elevation: 10,
+  },
+  acceptBtn: { overflow: 'hidden' },
+  acceptBtnInner: {
+    paddingVertical: 17,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  acceptText: {
+    color: '#050a08',
+    fontSize: 16,
+    fontWeight: '800',
+    letterSpacing: 0.5,
+  },
+
+  acceptedCard: {
+    backgroundColor: 'rgba(34,197,94,0.1)',
+    borderRadius: 16,
+    padding: 18,
+    marginBottom: 12,
+    borderWidth: 1,
+    borderColor: 'rgba(34,197,94,0.4)',
+    alignItems: 'center',
+  },
+  acceptedTitle: {
+    color: '#4ade80',
+    fontSize: 14,
+    fontWeight: '800',
+    marginBottom: 10,
+  },
+  seeProfileBtn: { paddingVertical: 4 },
+  seeProfileText: {
     color: '#22c55e',
     fontSize: 13,
-    minWidth: 28,
+    fontWeight: '800',
+    letterSpacing: 0.5,
   },
-  stationName: { fontSize: 14, fontWeight: '700', color: '#0f172a' },
-  stationInfo: { fontSize: 12, color: '#475569', marginTop: 2 },
-  stationDist: {
+
+  gridLine: {
+    position: 'absolute',
+    backgroundColor: 'rgba(34,197,94,0.08)',
+  },
+  routeLine: {
+    position: 'absolute',
+    height: 4,
+    backgroundColor: '#22c55e',
+    borderRadius: 2,
+  },
+  point: {
+    position: 'absolute',
+    width: 20,
+    height: 20,
+    borderRadius: 10,
+    marginLeft: -10,
+    marginTop: -10,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  pointStart: { backgroundColor: 'rgba(34,197,94,0.3)' },
+  pointEnd: { backgroundColor: 'rgba(239,68,68,0.3)' },
+  pointInner: {
+    width: 10,
+    height: 10,
+    borderRadius: 5,
+    backgroundColor: '#f0fdf4',
+  },
+  webMapBadge: {
+    position: 'absolute',
+    bottom: 12,
+    alignSelf: 'center',
+    backgroundColor: 'rgba(34,197,94,0.12)',
+    paddingHorizontal: 14,
+    paddingVertical: 8,
+    borderRadius: 20,
+    borderWidth: 1,
+    borderColor: 'rgba(34,197,94,0.3)',
+  },
+  webMapBadgeText: {
+    color: '#4ade80',
     fontSize: 11,
-    color: '#2563eb',
-    marginTop: 2,
-    fontWeight: '600',
+    fontWeight: '700',
+  },
+  footer: {
+    textAlign: 'center',
+    color: '#334155',
+    fontSize: 11,
+    marginTop: 24,
+    letterSpacing: 1,
   },
 });

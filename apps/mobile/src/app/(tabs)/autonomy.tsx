@@ -1,504 +1,705 @@
-import { useEffect, useRef, useState } from 'react';
+import { useState, useCallback, useRef } from 'react';
 import {
   View,
   Text,
   StyleSheet,
   TextInput,
-  Pressable,
   ScrollView,
   ActivityIndicator,
-  KeyboardAvoidingView,
-  Platform,
+  Animated,
+  Dimensions,
+  Pressable,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
+import { LinearGradient } from 'expo-linear-gradient';
 import * as Location from 'expo-location';
-import { geocodeAddress, GeocodingResult } from '../../services/geocoding';
-import { getRoute, RouteResult } from '../../services/routing';
-import { useVehicleStore } from '../../stores/vehicleStore';
+import { useFocusEffect } from 'expo-router';
+import { geocode } from '../../services/geocoding';
+import { getRoute } from '../../services/routing';
+import { vehiclesApi } from '../../services/vehicles';
+import { fetchWeather, WeatherInfo } from '../../services/weather';
+
+const { width, height } = Dimensions.get('window');
 
 type Point = { latitude: number; longitude: number; label: string };
 
-type Verdict = {
-  status: 'ok' | 'tight' | 'no';
-  message: string;
-  remainingAtArrivalKm: number;
-  batteryAtArrival: number;
-};
-
-const BATTERY_PRESETS = [25, 50, 75, 100];
-
-export default function AutonomyScreen() {
-  const vehicle = useVehicleStore((s) => s.vehicle);
-
-  const [batteryPercent, setBatteryPercent] = useState('80');
-  const [destinationQuery, setDestinationQuery] = useState('');
-  const [suggestions, setSuggestions] = useState<GeocodingResult[]>([]);
-  const [searching, setSearching] = useState(false);
-  const [destination, setDestination] = useState<Point | null>(null);
+export default function Autonomy() {
+  const [battery, setBattery] = useState('80');
+  const [query, setQuery] = useState('');
   const [start, setStart] = useState<Point | null>(null);
+  const [dest, setDest] = useState<Point | null>(null);
+  const [autonomyKm, setAutonomyKm] = useState(350);
+  const [baseAutonomy, setBaseAutonomy] = useState(350);
+  const [distance, setDistance] = useState<number | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [weather, setWeather] = useState<WeatherInfo | null>(null);
+  const [focused, setFocused] = useState<'battery' | 'query' | null>(null);
+  const [vehicleLoaded, setVehicleLoaded] = useState(false);
 
-  const [loadingLocation, setLoadingLocation] = useState(true);
-  const [calculating, setCalculating] = useState(false);
-  const [route, setRoute] = useState<RouteResult | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  const auroraShift = useRef(new Animated.Value(0)).current;
+  const shimmer = useRef(new Animated.Value(0)).current;
+  const fadeIn = useRef(new Animated.Value(0)).current;
+  const slideUp = useRef(new Animated.Value(30)).current;
+  const batteryAnim = useRef(new Animated.Value(0)).current;
 
-  const searchTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Animations globales (une seule fois)
+  useState(() => {
+    Animated.loop(
+      Animated.sequence([
+        Animated.timing(auroraShift, {
+          toValue: 1,
+          duration: 14000,
+          useNativeDriver: true,
+        }),
+        Animated.timing(auroraShift, {
+          toValue: 0,
+          duration: 14000,
+          useNativeDriver: true,
+        }),
+      ])
+    ).start();
 
-  // Charge la position au démarrage
-  useEffect(() => {
-    (async () => {
-      try {
+    Animated.loop(
+      Animated.timing(shimmer, {
+        toValue: 1,
+        duration: 2500,
+        useNativeDriver: true,
+      })
+    ).start();
+
+    Animated.parallel([
+      Animated.timing(fadeIn, {
+        toValue: 1,
+        duration: 500,
+        useNativeDriver: true,
+      }),
+      Animated.timing(slideUp, {
+        toValue: 0,
+        duration: 500,
+        useNativeDriver: true,
+      }),
+    ]).start();
+  });
+
+  // ⭐ Recharge les données à CHAQUE fois que l'écran reprend le focus
+  useFocusEffect(
+    useCallback(() => {
+      let cancelled = false;
+
+      (async () => {
+        // 1. Récupérer le véhicule (autonomie réelle)
+        let vehicleAutonomy = 350;
+        try {
+          const vs = await vehiclesApi.list();
+          if (vs.length && vs[0].autonomyKm) {
+            vehicleAutonomy = vs[0].autonomyKm;
+          }
+        } catch (e) {
+          console.warn('[autonomy] vehicle load failed', e);
+        }
+
+        if (cancelled) return;
+
+        // 2. Utiliser directement vehicleAutonomy (pas baseAutonomy qui n'est pas encore à jour)
+        setBaseAutonomy(vehicleAutonomy);
+
+        // 3. Récupérer la position
         const { status } = await Location.requestForegroundPermissionsAsync();
-        if (status !== 'granted') {
-          setError('Permission GPS refusée — impossible de calculer depuis ta position.');
-          setLoadingLocation(false);
-          return;
-        }
-        const pos = await Promise.race([
-          Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.Balanced }),
-          new Promise<null>((r) => setTimeout(() => r(null), 10000)),
-        ]);
-        if (pos) {
-          setStart({
-            latitude: pos.coords.latitude,
-            longitude: pos.coords.longitude,
-            label: '📍 Ma position',
-          });
+        if (cancelled) return;
+
+        if (status === 'granted') {
+          try {
+            const pos = await Location.getCurrentPositionAsync({});
+            const p = {
+              latitude: pos.coords.latitude,
+              longitude: pos.coords.longitude,
+            };
+            setStart({
+              latitude: p.latitude,
+              longitude: p.longitude,
+              label: '📍 Ma position',
+            });
+
+            // 4. Récupérer la météo
+            const w = await fetchWeather(p.latitude, p.longitude);
+            if (cancelled) return;
+
+            if (w) {
+              setWeather(w);
+              // ✅ CORRECTION : utilise vehicleAutonomy, pas baseAutonomy
+              const adjusted = Math.round(
+                vehicleAutonomy * (1 - w.autonomyPenalty / 100)
+              );
+              setAutonomyKm(adjusted);
+            } else {
+              setAutonomyKm(vehicleAutonomy);
+            }
+          } catch (e) {
+            console.warn('[autonomy] location/weather failed', e);
+            setAutonomyKm(vehicleAutonomy);
+          }
         } else {
-          setError("Impossible d'obtenir ta position.");
+          setAutonomyKm(vehicleAutonomy);
         }
-      } catch (e) {
-        setError('Erreur de localisation.');
-      } finally {
-        setLoadingLocation(false);
-      }
-    })();
-  }, []);
 
-  // Recherche destination avec debounce + biais géographique
-  async function onDestinationChange(text: string) {
-    setDestinationQuery(text);
-    setDestination(null);
-    setRoute(null);
+        if (!cancelled) setVehicleLoaded(true);
+      })();
 
-    if (searchTimerRef.current) clearTimeout(searchTimerRef.current);
+      return () => {
+        cancelled = true;
+      };
+    }, [])
+  );
 
-    if (text.trim().length < 3) {
-      setSuggestions([]);
-      return;
-    }
+  // Animation de la jauge batterie
+  useState(() => {
+    // initialisation silencieuse
+  });
 
-    searchTimerRef.current = setTimeout(async () => {
-      setSearching(true);
-      try {
-        // 🔑 Biais : priorise les résultats près de ta position
-        const results = await geocodeAddress(
-          text,
-          start?.latitude,
-          start?.longitude
-        );
-        setSuggestions(results);
-      } catch (e) {
-        console.warn('[autonomy] geocode:', e);
-      } finally {
-        setSearching(false);
-      }
-    }, 400);
-  }
+  useFocusEffect(
+    useCallback(() => {
+      const batt = Math.min(100, Math.max(0, Number(battery) || 0));
+      Animated.timing(batteryAnim, {
+        toValue: batt / 100,
+        duration: 600,
+        useNativeDriver: false,
+      }).start();
+    }, [battery])
+  );
 
-  function pickDestination(s: GeocodingResult) {
-    setDestination({
-      latitude: s.latitude,
-      longitude: s.longitude,
-      label: s.displayName,
-    });
-    setDestinationQuery(s.displayName);
-    setSuggestions([]);
-    setRoute(null);
-  }
-
-  async function calculate() {
-    if (!start || !destination) {
-      setError('Choisis une destination');
-      return;
-    }
-    setError(null);
-    setRoute(null);
-    setCalculating(true);
+  async function calc() {
+    if (!start || !query.trim()) return;
+    setLoading(true);
     try {
-      const result = await getRoute(start, destination);
-      if (!result) {
-        setError('Aucun itinéraire trouvé');
-        return;
-      }
-      setRoute(result);
-    } catch (e: any) {
-      setError(e?.message ?? 'Erreur');
+      const results = await geocode(query, {
+        lat: start.latitude,
+        lon: start.longitude,
+      });
+      if (!results.length) return;
+      const r = results[0];
+      const d = {
+        latitude: r.latitude,
+        longitude: r.longitude,
+        label: r.displayName,
+      };
+      setDest(d);
+      const route = await getRoute(start, d);
+      if (route) setDistance(route.distanceMeters / 1000);
     } finally {
-      setCalculating(false);
+      setLoading(false);
     }
   }
 
-  // Recalcul auto quand destination sélectionnée
-  useEffect(() => {
-    if (start && destination) {
-      calculate();
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [start, destination]);
+  const auroraX = auroraShift.interpolate({
+    inputRange: [0, 1],
+    outputRange: [-width * 0.2, width * 0.2],
+  });
+  const auroraXNeg = auroraShift.interpolate({
+    inputRange: [0, 1],
+    outputRange: [width * 0.2, -width * 0.2],
+  });
+  const shimmerX = shimmer.interpolate({
+    inputRange: [0, 1],
+    outputRange: [-250, 400],
+  });
+  const battWidth = batteryAnim.interpolate({
+    inputRange: [0, 1],
+    outputRange: ['0%', '100%'],
+  });
 
-  function computeVerdict(): Verdict | null {
-    if (!route) return null;
+  const batt = Math.min(100, Math.max(0, Number(battery) || 0));
+  const usable = autonomyKm * 0.8;
+  const battUsed = distance ? (distance / usable) * 100 : 0;
+  const battAtArrival = batt - battUsed;
 
-    const battery = Math.max(0, Math.min(100, Number(batteryPercent) || 0));
-    const usableAutonomyKm = vehicle.autonomyKm * 0.8;
-    const distanceKm = route.distanceMeters / 1000;
-    const batteryUsed = (distanceKm / usableAutonomyKm) * 100;
-    const batteryAtArrival = battery - batteryUsed;
-    const remainingAtArrivalKm = Math.max(
-      0,
-      usableAutonomyKm * (batteryAtArrival / 100)
-    );
-
-    if (batteryAtArrival < 0) {
-      return {
-        status: 'no',
-        message: `❌ Impossible sans recharger — il te manque environ ${Math.abs(
-          batteryAtArrival
-        ).toFixed(0)}% de batterie.`,
-        remainingAtArrivalKm: 0,
-        batteryAtArrival,
-      };
-    }
-
-    if (batteryAtArrival < 15) {
-      return {
-        status: 'tight',
-        message: `⚠️ C'est juste — tu arriveras avec ${batteryAtArrival.toFixed(
-          0
-        )}% (${remainingAtArrivalKm.toFixed(
-          0
-        )} km). Prévois une recharge.`,
-        remainingAtArrivalKm,
-        batteryAtArrival,
-      };
-    }
-
-    return {
-      status: 'ok',
-      message: `✅ Tu peux y aller ! Tu arriveras avec ${batteryAtArrival.toFixed(
-        0
-      )}% (${remainingAtArrivalKm.toFixed(0)} km d'autonomie).`,
-      remainingAtArrivalKm,
-      batteryAtArrival,
-    };
-  }
-
-  const verdict = computeVerdict();
-  const batteryNum = Math.max(0, Math.min(100, Number(batteryPercent) || 0));
+  const statusColor =
+    battAtArrival < 0 ? '#ef4444' : battAtArrival < 15 ? '#f59e0b' : '#22c55e';
+  const statusLabel =
+    battAtArrival < 0 ? '❌ Impossible' : battAtArrival < 15 ? '⚠️ Juste' : '✅ OK';
+  const statusGradient: [string, string] =
+    battAtArrival < 0
+      ? ['#ef4444', '#b91c1c']
+      : battAtArrival < 15
+      ? ['#f59e0b', '#d97706']
+      : ['#22c55e', '#16a34a'];
+  const batteryGradient: [string, string] =
+    batt < 15
+      ? ['#ef4444', '#b91c1c']
+      : batt < 40
+      ? ['#f59e0b', '#d97706']
+      : ['#22c55e', '#16a34a'];
 
   return (
-    <SafeAreaView style={styles.container} edges={['top']}>
-      <KeyboardAvoidingView
-        style={{ flex: 1 }}
-        behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+    <View style={styles.root}>
+      <Animated.View
+        style={[styles.auroraLayer, { transform: [{ translateX: auroraX }] }]}
       >
+        <LinearGradient
+          colors={['#052e16', '#0d2818', '#050a08']}
+          start={{ x: 0, y: 0 }}
+          end={{ x: 1, y: 1 }}
+          style={styles.fill}
+        />
+      </Animated.View>
+
+      <Animated.View
+        style={[
+          styles.auroraBlob,
+          styles.blob1,
+          { transform: [{ translateX: auroraX }] },
+        ]}
+      >
+        <LinearGradient colors={['#166534', 'transparent']} style={styles.fill} />
+      </Animated.View>
+
+      <Animated.View
+        style={[
+          styles.auroraBlob,
+          styles.blob2,
+          { transform: [{ translateX: auroraXNeg }] },
+        ]}
+      >
+        <LinearGradient colors={['#14532d', 'transparent']} style={styles.fill} />
+      </Animated.View>
+
+      <SafeAreaView style={styles.safe} edges={['top']}>
         <ScrollView
-          contentContainerStyle={styles.scroll}
-          keyboardShouldPersistTaps="handled"
+          contentContainerStyle={styles.scrollContent}
+          showsVerticalScrollIndicator={false}
         >
-          <Text style={styles.title}>⚡ Autonomie</Text>
-          <Text style={styles.subtitle}>
-            {vehicle.modelName} · {vehicle.autonomyKm} km max
-          </Text>
+          <Animated.View
+            style={{ opacity: fadeIn, transform: [{ translateY: slideUp }] }}
+          >
+            <View style={styles.header}>
+              <Text style={styles.title}>⚡ Autonomie</Text>
+              <Text style={styles.subtitle}>
+                {vehicleLoaded
+                  ? `Véhicule : ${autonomyKm} km${
+                      weather && weather.autonomyPenalty > 0
+                        ? ` (−${weather.autonomyPenalty}% météo)`
+                        : ''
+                    }`
+                  : 'Chargement du véhicule…'}
+              </Text>
+            </View>
 
-          {/* Batterie */}
-          <Text style={styles.label}>Batterie actuelle</Text>
-          <View style={styles.batteryRow}>
-            <TextInput
-              style={styles.batteryInput}
-              value={batteryPercent}
-              onChangeText={setBatteryPercent}
-              keyboardType="numeric"
-              maxLength={3}
-            />
-            <Text style={styles.batteryPercentSign}>%</Text>
-          </View>
-
-          <View style={styles.presets}>
-            {BATTERY_PRESETS.map((p) => {
-              const active = batteryNum === p;
-              return (
-                <Pressable
-                  key={p}
-                  style={[styles.presetBtn, active && styles.presetBtnActive]}
-                  onPress={() => setBatteryPercent(String(p))}
+            {weather && (
+              <View style={styles.weatherCard}>
+                <LinearGradient
+                  colors={['rgba(34,197,94,0.12)', 'rgba(34,197,94,0.02)']}
+                  start={{ x: 0, y: 0 }}
+                  end={{ x: 1, y: 1 }}
+                  style={styles.fill}
+                />
+                <Text style={styles.weatherIcon}>{weather.icon}</Text>
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.weatherTemp}>{weather.temperature}°C</Text>
+                  <Text style={styles.weatherDesc}>{weather.description}</Text>
+                </View>
+                <View
+                  style={[
+                    styles.weatherBadge,
+                    weather.autonomyPenalty > 0 && styles.weatherBadgeWarn,
+                  ]}
                 >
                   <Text
-                    style={[styles.presetText, active && styles.presetTextActive]}
+                    style={[
+                      styles.weatherBadgeText,
+                      weather.autonomyPenalty > 0 && styles.weatherBadgeTextWarn,
+                    ]}
                   >
-                    {p}%
+                    {weather.autonomyPenalty > 0
+                      ? `−${weather.autonomyPenalty}%`
+                      : '✓ Optimal'}
                   </Text>
-                </Pressable>
-              );
-            })}
-          </View>
+                </View>
+              </View>
+            )}
 
-          <View style={styles.batteryBar}>
-            <View
-              style={[
-                styles.batteryFill,
-                {
-                  width: `${batteryNum}%`,
-                  backgroundColor:
-                    batteryNum > 50
-                      ? '#22c55e'
-                      : batteryNum > 20
-                      ? '#f59e0b'
-                      : '#ef4444',
-                },
-              ]}
-            />
-          </View>
-          <Text style={styles.batteryHint}>
-            Autonomie utile (marge 20%) :{' '}
-            {Math.round((vehicle.autonomyKm * 0.8 * batteryNum) / 100)} km
-          </Text>
+            <View style={styles.card}>
+              <View style={styles.batteryHeader}>
+                <Text style={styles.label}>Batterie actuelle</Text>
+                <Text style={styles.batteryValue}>{batt}%</Text>
+              </View>
 
-          {/* Destination */}
-          <Text style={styles.label}>Destination exacte</Text>
-          <TextInput
-            style={styles.input}
-            placeholder="ex: Avenue Hassan II, Casablanca"
-            value={destinationQuery}
-            onChangeText={onDestinationChange}
-          />
-          {start && (
-            <Text style={styles.hint}>
-              🎯 Résultats prioritaires autour de ta position
-            </Text>
-          )}
+              <View style={styles.batteryBarBg}>
+                <Animated.View
+                  style={[styles.batteryBarFill, { width: battWidth }]}
+                >
+                  <LinearGradient
+                    colors={batteryGradient}
+                    start={{ x: 0, y: 0 }}
+                    end={{ x: 1, y: 0 }}
+                    style={styles.fill}
+                  />
+                </Animated.View>
+              </View>
 
-          {searching && (
-            <View style={styles.searchingRow}>
-              <ActivityIndicator color="#16a34a" size="small" />
-              <Text style={styles.searchingText}>Recherche…</Text>
-            </View>
-          )}
-
-          {/* Suggestions */}
-          {suggestions.length > 0 && (
-            <View style={styles.suggestionsBox}>
-              {suggestions.map((s, i) => {
-                const parts = s.displayName.split(', ');
-                const title = parts.slice(0, 2).join(', ');
-                const subtitle = parts.slice(2).join(', ');
-                return (
-                  <Pressable
-                    key={`d-${i}`}
-                    style={styles.sugg}
-                    onPress={() => pickDestination(s)}
-                  >
-                    <Text style={styles.suggTitle} numberOfLines={1}>
-                      📍 {title}
-                    </Text>
-                    {subtitle ? (
-                      <Text style={styles.suggSub} numberOfLines={1}>
-                        {subtitle}
-                      </Text>
-                    ) : null}
-                  </Pressable>
-                );
-              })}
-            </View>
-          )}
-
-          {loadingLocation && (
-            <View style={styles.center}>
-              <ActivityIndicator color="#22c55e" />
-              <Text style={styles.loadingText}>Recherche de ta position…</Text>
-            </View>
-          )}
-          {calculating && (
-            <View style={styles.center}>
-              <ActivityIndicator color="#22c55e" />
-              <Text style={styles.loadingText}>Calcul en cours…</Text>
-            </View>
-          )}
-          {error ? <Text style={styles.error}>{error}</Text> : null}
-
-          {/* Résultat */}
-          {route && verdict && destination && (
-            <>
-              <View
+              <TextInput
                 style={[
-                  styles.verdictCard,
-                  verdict.status === 'ok' && styles.verdictOk,
-                  verdict.status === 'tight' && styles.verdictTight,
-                  verdict.status === 'no' && styles.verdictNo,
+                  styles.input,
+                  { marginTop: 12 },
+                  focused === 'battery' && styles.inputFocused,
                 ]}
-              >
-                <Text style={styles.verdictText}>{verdict.message}</Text>
-              </View>
+                value={battery}
+                onChangeText={setBattery}
+                keyboardType="numeric"
+                placeholder="80"
+                placeholderTextColor="#475569"
+                onFocus={() => setFocused('battery')}
+                onBlur={() => setFocused(null)}
+              />
+            </View>
 
-              <View style={styles.detailsBox}>
-                <Row
-                  label="Distance"
-                  value={`${(route.distanceMeters / 1000).toFixed(0)} km`}
-                />
-                <Row
-                  label="Durée"
-                  value={`${Math.floor(route.durationSeconds / 3600)}h${String(
-                    Math.floor((route.durationSeconds % 3600) / 60)
-                  ).padStart(2, '0')}`}
-                />
-                <View style={styles.divider} />
-                <Row label="Batterie départ" value={`${batteryNum}%`} />
-                <Row
-                  label="Batterie à l'arrivée"
-                  value={`${verdict.batteryAtArrival.toFixed(0)}%`}
-                />
-                <Row
-                  label="Autonomie restante"
-                  value={`${verdict.remainingAtArrivalKm.toFixed(0)} km`}
-                />
-                <Row
-                  label="Destination"
-                  value={destination.label.split(',')[0]}
-                />
+            <View style={styles.card}>
+              <Text style={styles.label}>Destination</Text>
+              <TextInput
+                style={[styles.input, focused === 'query' && styles.inputFocused]}
+                value={query}
+                onChangeText={setQuery}
+                onSubmitEditing={calc}
+                returnKeyType="search"
+                placeholder="ex: Casablanca"
+                placeholderTextColor="#475569"
+                onFocus={() => setFocused('query')}
+                onBlur={() => setFocused(null)}
+              />
+
+              <View style={styles.startInfo}>
+                <Text style={styles.startInfoEmoji}>📍</Text>
+                <Text style={styles.startInfoText} numberOfLines={1}>
+                  {start
+                    ? 'Position actuelle détectée'
+                    : 'Localisation en cours…'}
+                </Text>
               </View>
-            </>
-          )}
+            </View>
+
+            <View style={styles.calcBtnWrapper}>
+              <View style={styles.calcBtn}>
+                <LinearGradient
+                  colors={['#22c55e', '#16a34a']}
+                  start={{ x: 0, y: 0 }}
+                  end={{ x: 1, y: 0 }}
+                  style={styles.fill}
+                />
+                <Animated.View
+                  style={[
+                    styles.shimmerBar,
+                    { transform: [{ translateX: shimmerX }] },
+                  ]}
+                >
+                  <LinearGradient
+                    colors={[
+                      'transparent',
+                      'rgba(255,255,255,0.4)',
+                      'transparent',
+                    ]}
+                    start={{ x: 0, y: 0 }}
+                    end={{ x: 1, y: 0 }}
+                    style={styles.fill}
+                  />
+                </Animated.View>
+                <Pressable
+                  onPress={calc}
+                  disabled={loading}
+                  style={styles.calcBtnInner}
+                >
+                  {loading ? (
+                    <ActivityIndicator color="#050a08" />
+                  ) : (
+                    <Text style={styles.calcText}>⚡ Calculer l'autonomie</Text>
+                  )}
+                </Pressable>
+              </View>
+            </View>
+
+            {distance !== null && dest && (
+              <View style={styles.resultCard}>
+                <LinearGradient
+                  colors={statusGradient}
+                  start={{ x: 0, y: 0 }}
+                  end={{ x: 1, y: 1 }}
+                  style={styles.resultHeaderGradient}
+                >
+                  <Text style={styles.resultStatus}>{statusLabel}</Text>
+                </LinearGradient>
+
+                <View style={styles.resultBody}>
+                  <View style={styles.resultRow}>
+                    <Text style={styles.resultLabel}>Destination</Text>
+                    <Text style={styles.resultValue} numberOfLines={1}>
+                      {dest.label.split(',')[0]}
+                    </Text>
+                  </View>
+
+                  <View style={styles.resultRow}>
+                    <Text style={styles.resultLabel}>Distance</Text>
+                    <Text style={styles.resultValue}>
+                      {distance.toFixed(0)} km
+                    </Text>
+                  </View>
+
+                  <View style={styles.resultRow}>
+                    <Text style={styles.resultLabel}>Batterie utilisée</Text>
+                    <Text style={styles.resultValue}>
+                      {battUsed.toFixed(0)}%
+                    </Text>
+                  </View>
+
+                  <View style={styles.divider} />
+
+                  <View style={styles.resultRow}>
+                    <Text style={styles.resultLabel}>
+                      Batterie à l'arrivée
+                    </Text>
+                    <Text style={[styles.resultValue, { color: statusColor }]}>
+                      {battAtArrival.toFixed(0)}%
+                    </Text>
+                  </View>
+
+                  <View style={styles.resultRow}>
+                    <Text style={styles.resultLabel}>Autonomie restante</Text>
+                    <Text style={[styles.resultValue, { color: statusColor }]}>
+                      {Math.max(0, usable * (battAtArrival / 100)).toFixed(0)} km
+                    </Text>
+                  </View>
+
+                  <View style={styles.arrivalBarBg}>
+                    <View
+                      style={[
+                        styles.arrivalBarFill,
+                        {
+                          width: `${Math.max(
+                            0,
+                            Math.min(100, battAtArrival)
+                          )}%`,
+                          backgroundColor: statusColor,
+                        },
+                      ]}
+                    />
+                  </View>
+                </View>
+              </View>
+            )}
+
+            <Text style={styles.footer}>v2.0 · Électrise ta route ⚡</Text>
+          </Animated.View>
         </ScrollView>
-      </KeyboardAvoidingView>
-    </SafeAreaView>
-  );
-}
-
-function Row({ label, value }: { label: string; value: string }) {
-  return (
-    <View style={styles.row}>
-      <Text style={styles.rowLabel}>{label}</Text>
-      <Text style={styles.rowValue}>{value}</Text>
+      </SafeAreaView>
     </View>
   );
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: '#ecfdf5' },
-  scroll: { padding: 20, paddingBottom: 60 },
-  title: { fontSize: 28, fontWeight: 'bold', color: '#16a34a', marginBottom: 4 },
-  subtitle: { fontSize: 14, color: '#15803d', marginBottom: 20 },
-  label: {
-    fontSize: 13,
-    fontWeight: '700',
-    color: '#334155',
-    marginTop: 14,
-    marginBottom: 6,
+  root: { flex: 1, backgroundColor: '#050a08' },
+  safe: { flex: 1 },
+  scrollContent: { paddingHorizontal: 20, paddingBottom: 40 },
+  fill: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
   },
-  hint: { fontSize: 11, color: '#64748b', marginTop: 6, fontStyle: 'italic' },
-  batteryRow: { flexDirection: 'row', alignItems: 'center' },
-  batteryInput: {
-    flex: 1,
-    backgroundColor: '#fff',
-    borderRadius: 10,
-    paddingHorizontal: 14,
-    paddingVertical: 12,
-    fontSize: 24,
-    fontWeight: '700',
-    color: '#0f172a',
-    borderWidth: 1,
-    borderColor: '#cbd5e1',
-    textAlign: 'center',
+  auroraLayer: {
+    position: 'absolute',
+    top: -100,
+    left: -100,
+    width: width * 1.5,
+    height: height * 1.5,
   },
-  batteryPercentSign: {
-    fontSize: 24,
-    fontWeight: '700',
-    color: '#16a34a',
-    marginLeft: 10,
-  },
-  presets: { flexDirection: 'row', gap: 8, marginTop: 10 },
-  presetBtn: {
-    flex: 1,
-    paddingVertical: 8,
-    borderRadius: 8,
-    backgroundColor: '#f1f5f9',
-    alignItems: 'center',
-    borderWidth: 1,
-    borderColor: '#e2e8f0',
-  },
-  presetBtnActive: { backgroundColor: '#22c55e', borderColor: '#16a34a' },
-  presetText: { fontSize: 13, fontWeight: '600', color: '#475569' },
-  presetTextActive: { color: '#fff' },
-  batteryBar: {
-    height: 14,
-    backgroundColor: '#e2e8f0',
-    borderRadius: 7,
+  auroraBlob: {
+    position: 'absolute',
+    width: width * 0.9,
+    height: width * 0.9,
+    borderRadius: width * 0.45,
     overflow: 'hidden',
-    marginTop: 16,
   },
-  batteryFill: { height: '100%', borderRadius: 7 },
-  batteryHint: {
-    fontSize: 12,
-    color: '#64748b',
-    textAlign: 'center',
-    marginTop: 6,
+  blob1: { top: -100, left: -150 },
+  blob2: { bottom: -150, right: -150 },
+  header: { paddingTop: 12, paddingBottom: 20 },
+  title: {
+    fontSize: 32,
+    fontWeight: '800',
+    color: '#f0fdf4',
+    letterSpacing: -0.8,
   },
-  input: {
-    backgroundColor: '#fff',
-    borderRadius: 10,
-    paddingHorizontal: 14,
-    paddingVertical: 12,
-    fontSize: 14,
-    borderWidth: 1,
-    borderColor: '#cbd5e1',
+  subtitle: {
+    fontSize: 13,
+    color: '#86efac',
+    marginTop: 4,
+    letterSpacing: 0.5,
+    opacity: 0.85,
   },
-  searchingRow: {
+  weatherCard: {
     flexDirection: 'row',
     alignItems: 'center',
-    marginTop: 8,
-    paddingLeft: 4,
-  },
-  searchingText: { marginLeft: 8, fontSize: 12, color: '#16a34a' },
-  suggestionsBox: {
-    backgroundColor: '#fff',
-    borderRadius: 10,
-    marginTop: 8,
+    backgroundColor: 'rgba(15,23,20,0.85)',
+    borderRadius: 18,
+    padding: 16,
+    marginBottom: 12,
     borderWidth: 1,
-    borderColor: '#e2e8f0',
+    borderColor: 'rgba(34,197,94,0.25)',
+    gap: 12,
     overflow: 'hidden',
   },
-  sugg: {
-    paddingHorizontal: 14,
-    paddingVertical: 10,
-    borderBottomWidth: 1,
-    borderBottomColor: '#f1f5f9',
+  weatherIcon: { fontSize: 36 },
+  weatherTemp: {
+    fontSize: 22,
+    fontWeight: '800',
+    color: '#f0fdf4',
+    letterSpacing: -0.5,
   },
-  suggTitle: { fontSize: 14, fontWeight: '700', color: '#0f172a' },
-  suggSub: { fontSize: 11, color: '#64748b', marginTop: 2 },
-  center: { padding: 16, alignItems: 'center' },
-  loadingText: { marginTop: 8, color: '#16a34a', fontSize: 13 },
-  error: { color: '#ef4444', marginTop: 12, textAlign: 'center' },
-  verdictCard: { marginTop: 20, borderRadius: 14, padding: 16 },
-  verdictOk: { backgroundColor: '#dcfce7', borderWidth: 1, borderColor: '#86efac' },
-  verdictTight: { backgroundColor: '#fef3c7', borderWidth: 1, borderColor: '#fde68a' },
-  verdictNo: { backgroundColor: '#fee2e2', borderWidth: 1, borderColor: '#fca5a5' },
-  verdictText: {
-    fontSize: 15,
-    fontWeight: '700',
-    color: '#0f172a',
-    textAlign: 'center',
+  weatherDesc: {
+    fontSize: 12,
+    color: '#86efac',
+    marginTop: 2,
+    opacity: 0.8,
   },
-  detailsBox: {
-    marginTop: 14,
-    backgroundColor: '#fff',
-    borderRadius: 12,
-    padding: 16,
+  weatherBadge: {
+    backgroundColor: 'rgba(34,197,94,0.15)',
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: 10,
     borderWidth: 1,
-    borderColor: '#e2e8f0',
+    borderColor: 'rgba(34,197,94,0.4)',
   },
-  row: { flexDirection: 'row', justifyContent: 'space-between', paddingVertical: 6 },
-  rowLabel: { fontSize: 13, color: '#64748b' },
-  rowValue: { fontSize: 14, fontWeight: '700', color: '#0f172a' },
-  divider: { height: 1, backgroundColor: '#e2e8f0', marginVertical: 6 },
+  weatherBadgeWarn: {
+    backgroundColor: 'rgba(245,158,11,0.15)',
+    borderColor: 'rgba(245,158,11,0.4)',
+  },
+  weatherBadgeText: {
+    fontSize: 12,
+    fontWeight: '800',
+    color: '#4ade80',
+    letterSpacing: 0.5,
+  },
+  weatherBadgeTextWarn: { color: '#fbbf24' },
+  card: {
+    backgroundColor: 'rgba(15,23,20,0.85)',
+    borderRadius: 18,
+    padding: 16,
+    marginBottom: 12,
+    borderWidth: 1,
+    borderColor: 'rgba(34,197,94,0.2)',
+  },
+  batteryHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 10,
+  },
+  batteryValue: { fontSize: 22, fontWeight: '800', color: '#22c55e' },
+  label: {
+    fontSize: 11,
+    fontWeight: '700',
+    color: '#86efac',
+    marginBottom: 6,
+    letterSpacing: 1.2,
+    textTransform: 'uppercase',
+  },
+  batteryBarBg: {
+    height: 12,
+    backgroundColor: 'rgba(34,197,94,0.1)',
+    borderRadius: 6,
+    overflow: 'hidden',
+  },
+  batteryBarFill: {
+    height: '100%',
+    borderRadius: 6,
+    overflow: 'hidden',
+  },
+  input: {
+    backgroundColor: '#0a1410',
+    borderRadius: 12,
+    paddingHorizontal: 14,
+    paddingVertical: 13,
+    fontSize: 15,
+    color: '#f0fdf4',
+    borderWidth: 1,
+    borderColor: '#1e293b',
+  },
+  inputFocused: { borderColor: '#22c55e' },
+  startInfo: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginTop: 12,
+    gap: 6,
+  },
+  startInfoEmoji: { fontSize: 14 },
+  startInfoText: { fontSize: 12, color: '#64748b', fontStyle: 'italic' },
+  calcBtnWrapper: {
+    marginBottom: 12,
+    borderRadius: 14,
+    overflow: 'hidden',
+    shadowColor: '#22c55e',
+    shadowOpacity: 0.4,
+    shadowRadius: 14,
+    shadowOffset: { width: 0, height: 4 },
+    elevation: 8,
+  },
+  calcBtn: { overflow: 'hidden' },
+  calcBtnInner: {
+    paddingVertical: 16,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  shimmerBar: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    width: 150,
+    height: '100%',
+  },
+  calcText: {
+    color: '#050a08',
+    fontSize: 15,
+    fontWeight: '800',
+    letterSpacing: 0.4,
+  },
+  resultCard: {
+    borderRadius: 18,
+    overflow: 'hidden',
+    marginBottom: 12,
+    borderWidth: 1,
+    borderColor: 'rgba(34,197,94,0.2)',
+    backgroundColor: 'rgba(15,23,20,0.9)',
+  },
+  resultHeaderGradient: { padding: 14, alignItems: 'center' },
+  resultStatus: {
+    color: '#050a08',
+    fontSize: 16,
+    fontWeight: '800',
+    letterSpacing: 0.5,
+  },
+  resultBody: { padding: 16 },
+  resultRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    paddingVertical: 6,
+  },
+  resultLabel: { fontSize: 13, color: '#94a3b8' },
+  resultValue: { fontSize: 14, fontWeight: '700', color: '#f0fdf4' },
+  divider: {
+    height: 1,
+    backgroundColor: 'rgba(34,197,94,0.15)',
+    marginVertical: 8,
+  },
+  arrivalBarBg: {
+    marginTop: 12,
+    height: 8,
+    backgroundColor: 'rgba(34,197,94,0.1)',
+    borderRadius: 4,
+    overflow: 'hidden',
+  },
+  arrivalBarFill: { height: '100%', borderRadius: 4 },
+  footer: {
+    textAlign: 'center',
+    color: '#334155',
+    fontSize: 11,
+    marginTop: 24,
+    letterSpacing: 1,
+  },
 });

@@ -1,4 +1,4 @@
-import { apiFetch } from './apiClient';
+import { apiFetch } from './api';
 
 export type Vehicle = {
   id: number;
@@ -32,4 +32,6 @@ export const vehiclesApi = {
 
   delete: (id: number) =>
     apiFetch<void>(`/api/vehicles/${id}`, { method: 'DELETE' }),
+
+
 };

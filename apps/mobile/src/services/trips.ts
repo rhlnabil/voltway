@@ -1,6 +1,6 @@
-import { apiFetch } from './apiClient';
+import { apiFetch } from './api';
 
-export type TripStationDto = {
+export type TripStation = {
   ocmStationId: number;
   stationName: string;
   latitude: number;
@@ -10,7 +10,7 @@ export type TripStationDto = {
   orderIndex: number;
 };
 
-export type TripDto = {
+export type Trip = {
   id: number;
   startLabel: string;
   endLabel: string;
@@ -18,16 +18,15 @@ export type TripDto = {
   durationS: number;
   stopsNeeded: number;
   createdAt: string;
-  stations?: TripStationDto[];
+  stations?: TripStation[];
 };
 
 export const tripsApi = {
-  list: () => apiFetch<TripDto[]>('/api/trips'),
-
-  get: (id: number) => apiFetch<TripDto>(`/api/trips/${id}`),
-
+  list: () => apiFetch<Trip[]>('/api/trips'),
+  get: (id: number) => apiFetch<Trip>(`/api/trips/${id}`),
+  delete: (id: number) =>
+    apiFetch<void>(`/api/trips/${id}`, { method: 'DELETE' }),
   create: (payload: {
-    vehicleId?: number;
     startLabel: string;
     startLat: number;
     startLon: number;
@@ -37,13 +36,10 @@ export const tripsApi = {
     distanceKm: number;
     durationS: number;
     stopsNeeded: number;
-    stations: TripStationDto[];
+    stations: TripStation[];
   }) =>
-    apiFetch<TripDto>('/api/trips', {
+    apiFetch<Trip>('/api/trips', {
       method: 'POST',
       body: JSON.stringify(payload),
     }),
-
-  delete: (id: number) =>
-    apiFetch<void>(`/api/trips/${id}`, { method: 'DELETE' }),
 };

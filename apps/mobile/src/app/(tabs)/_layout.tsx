@@ -8,10 +8,6 @@ export default function TabsLayout() {
         tabBarActiveTintColor: '#22c55e',
         tabBarInactiveTintColor: '#94a3b8',
         headerShown: false,
-        tabBarStyle: {
-          backgroundColor: '#ffffff',
-          borderTopColor: '#e2e8f0',
-        },
       }}
     >
       <Tabs.Screen
@@ -19,7 +15,11 @@ export default function TabsLayout() {
         options={{
           title: 'Carte',
           tabBarIcon: ({ color, size }) => (
-            <FontAwesome name="map" size={size} color={color as string} />
+            <FontAwesome
+              name="map"
+              size={size}
+              color={typeof color === 'string' ? color : '#000'}
+            />
           ),
         }}
       />
@@ -28,7 +28,11 @@ export default function TabsLayout() {
         options={{
           title: 'Planifier',
           tabBarIcon: ({ color, size }) => (
-            <FontAwesome name="road" size={size} color={color as string} />
+            <FontAwesome
+              name="road"
+              size={size}
+              color={typeof color === 'string' ? color : '#000'}
+            />
           ),
         }}
       />
@@ -40,7 +44,7 @@ export default function TabsLayout() {
             <FontAwesome
               name="battery-three-quarters"
               size={size}
-              color={color as string}
+              color={typeof color === 'string' ? color : '#000'}
             />
           ),
         }}
@@ -50,7 +54,11 @@ export default function TabsLayout() {
         options={{
           title: 'Profil',
           tabBarIcon: ({ color, size }) => (
-            <FontAwesome name="user" size={size} color={color as string} />
+            <FontAwesome
+              name="user"
+              size={size}
+              color={typeof color === 'string' ? color : '#000'}
+            />
           ),
         }}
       />

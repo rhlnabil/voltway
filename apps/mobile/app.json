@@ -2,11 +2,12 @@
   "expo": {
     "name": "VoltWay",
     "slug": "voltway",
-    "version": "1.0.0",
+    "version": "2.0.0",
     "scheme": "voltway",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
     "userInterfaceStyle": "light",
+    "newArchEnabled": true,
     "android": {
       "package": "com.voltway.app",
       "adaptiveIcon": {
@@ -14,23 +15,31 @@
         "backgroundImage": "./assets/android-icon-background.png",
         "monochromeImage": "./assets/android-icon-monochrome.png",
         "backgroundColor": "#16a34a"
-      }
+      },
+      "versionCode": 6
     },
     "ios": {
       "bundleIdentifier": "com.voltway.app"
     },
     "plugins": [
+      "expo-router",
       "expo-location",
-      "expo-image-picker",
       "expo-secure-store",
-      "expo-font",
       [
         "expo-splash-screen",
         {
           "image": "./assets/logo.png",
-          "imageWidth": 220,
+          "imageWidth": 200,
           "resizeMode": "contain",
           "backgroundColor": "#000000"
+        }
+      ],
+      [
+        "expo-build-properties",
+        {
+          "android": {
+            "ndkVersion": "27.1.12297006"
+          }
         }
       ]
     ],
@@ -38,7 +47,6 @@
       "eas": {
         "projectId": "ca468238-32c0-4560-8b57-458d3f80839c"
       }
-    },
-    "owner": "rhlnabil02"
+    }
   }
 }
